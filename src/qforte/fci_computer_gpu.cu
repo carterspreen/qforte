@@ -253,81 +253,60 @@ void FCIComputerGPU::apply_tensor_spat_12bdy(
     const TensorGPU& h2e_einsum, 
     size_t norb) 
 {
-    if(h1e.size() != norb * norb){
-        throw std::invalid_argument("Expecting h1e to be norb x norb for apply_tensor_spat_12bdy");
+    if(h1e.size() != (norb) * (norb)){
+        throw std::invalid_argument("Expecting h1e to be nmo x nmo for apply_tensor_spat_12bdy");
     }
 
-    if(h2e.size() != norb * norb * norb * norb){
-        throw std::invalid_argument("Expecting h2e to be norb x norb x norb x norb for apply_tensor_spat_12bdy");
-    }
-
-    if(h2e_einsum.size() != norb * norb * norb * norb){
-        throw std::invalid_argument("Expecting h2e_einsum to be norb x norb x norb x norb for apply_tensor_spat_12bdy");
+    if(h2e.size() != (norb) * (norb) * (norb) * (norb) ){
+        throw std::invalid_argument("Expecting h2e to be nso x nso x nso nso for apply_tensor_spin_12bdy");
     }
 
     TensorGPU Cnew({nalfa_strs_, nbeta_strs_}, "Cnew");
+    Cnew.zero();
 
-    // Apply one-body terms
-    apply_array_1bdy_cpu(
-        Cnew,
-        graph_.read_dexca_vec(),
-        nalfa_strs_,
-        nbeta_strs_,
-        graph_.get_ndexca(),
-        h1e,
-        norb_,
-        true);
-
-    apply_array_1bdy_cpu(
-        Cnew,
-        graph_.read_dexcb_vec(),
-        nalfa_strs_,
-        nbeta_strs_,
-        graph_.get_ndexcb(),
-        h1e,
-        norb_,
-        false);
-
-    // Apply two-body terms (same spin)
     lm_apply_array12_same_spin_opt_cpu(
-        Cnew,
-        graph_.read_dexca_vec(),
+        Cnew, 
+        graph_.read_dexca_vec(), // dexca_tmp
         nalfa_strs_,
-        nbeta_strs_,
+        nbeta_strs_, 
         graph_.get_ndexca(),
-        h1e,
+        h1e, 
         h2e,
         norb_,
         true);
 
+    Cnew.transpose();
+        
     lm_apply_array12_same_spin_opt_cpu(
-        Cnew,
+        Cnew, 
         graph_.read_dexcb_vec(),
         nalfa_strs_,
-        nbeta_strs_,
+        nbeta_strs_, 
         graph_.get_ndexcb(),
-        h1e,
+        h1e, 
         h2e,
         norb_,
         false);
 
-    // Apply two-body terms (different spin)
+    Cnew.transpose();
+
     lm_apply_array12_diff_spin_opt_cpu(
         Cnew,
         graph_.read_dexca_vec(),
         graph_.read_dexcb_vec(),
         nalfa_strs_,
-        nbeta_strs_,
+        nbeta_strs_, 
         graph_.get_ndexca(),
-        graph_.get_ndexcb(),
-        h2e_einsum,
-        norb_);
+        graph_.get_ndexca(),
+        h2e_einsum, 
+        norb_); 
 
     C_ = Cnew;
 }
 
 /// apply TensorGPUs represending 1-body and 2-body spatial-orbital indexed operator
 /// as well as a constant to the current state 
+/// TODO: changing to be GPU implementation
 void FCIComputerGPU::apply_tensor_spat_012bdy(
     const std::complex<double> h0e,
     const TensorGPU& h1e, 

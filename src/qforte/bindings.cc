@@ -528,7 +528,13 @@ PYBIND11_MODULE(qforte, m) {
         .def("zero", &TensorGPU::zero)
         .def("set", &TensorGPU::set, "idx"_a, "value"_a)
         .def("fill_from_nparray", &TensorGPU::fill_from_nparray, "array"_a, "shape"_a)
-        .def("__repr__", &TensorGPU::str);
+        .def("fill_from_tensor_cpu", &TensorGPU::fill_from_tensor_cpu, "other"_a, "shape"_a)
+        .def("__repr__", &TensorGPU::str,
+            py::arg("print_data") = true, 
+            py::arg("print_complex") = false, 
+            py::arg("maxcols") = 5,
+            py::arg("data_format") = "%12.7f",
+            py::arg("header_format") = "%12zu");
 
     py::class_<FCIComputerGPU>(m, "FCIComputerGPU")
         .def(py::init<int, int, int, bool, std::string>(), "nel"_a, "sz"_a, "norb"_a, "on_gpu"_a, "data_type"_a, "Make a FCIComputerGPU with nel, sz, and norb")

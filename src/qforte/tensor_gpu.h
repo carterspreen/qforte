@@ -123,6 +123,9 @@ void ndim_error(size_t) const;
 
 void fill_from_nparray(std::vector<std::complex<double>>, std::vector<size_t>);
 
+// fill data from the cpu tensor
+void fill_from_tensor_cpu(const Tensor&, std::vector<size_t>);
+
 std::string str(
     bool print_data = true,
     bool print_complex = false,
