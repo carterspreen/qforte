@@ -821,3 +821,320 @@ extern "C" void inplace_givens_update_real_tiled_wrapper(
             break;
     }
 }
+
+// ==============================================
+// LM Apply Array12 Same Spin kernel and wrapper
+// ==============================================
+
+__global__ void lm_apply_array12_same_spin_opt_kernel(
+    cuDoubleComplex* __restrict__ d_out,
+    const cuDoubleComplex* __restrict__ d_C,
+    const int* __restrict__ d_dexc,
+    const cuDoubleComplex* __restrict__ d_h1e,
+    const cuDoubleComplex* __restrict__ d_h2e,
+    int states1,
+    int states2,
+    int ndexc,
+    int norbs,
+    int inc1,
+    int inc2,
+    cuDoubleComplex* __restrict__ temp_global) // size states1*states1
+{
+    // Each thread handles one s1 state
+    int s1 = blockIdx.x * blockDim.x + threadIdx.x;
+    if (s1 >= states1) return;
+
+    cuDoubleComplex* temp = temp_global + s1 * states1;
+
+    // Initialize temp to zero
+    for (int i = 0; i < states1; ++i) {
+        temp[i] = make_cuDoubleComplex(0.0, 0.0);
+    }
+
+    const int* cdexc = d_dexc + 3 * s1 * ndexc;
+    const int* lim1 = cdexc + 3 * ndexc;
+
+    // First loop: build temp array
+    for (; cdexc < lim1; cdexc += 3) {
+        const int s2 = cdexc[0];
+        const int ijshift = cdexc[1];
+        const int parity1 = cdexc[2];
+        
+        const int* cdexc2 = d_dexc + 3 * s2 * ndexc;
+        const int* lim2 = cdexc2 + 3 * ndexc;
+        const int h2e_id = ijshift * norbs * norbs;
+        const cuDoubleComplex* h2etmp = d_h2e + h2e_id;
+        
+        // Add h1e contribution
+        cuDoubleComplex h1e_contrib = cuCmul(
+            make_cuDoubleComplex(static_cast<double>(parity1), 0.0),
+            d_h1e[ijshift]
+        );
+        temp[s2] = cuCadd(temp[s2], h1e_contrib);
+
+        // Inner loop over cdexc2
+        for (; cdexc2 < lim2; cdexc2 += 3) {
+            const int target = cdexc2[0];
+            const int klshift = cdexc2[1];
+            const int parity = cdexc2[2] * parity1;
+            
+            cuDoubleComplex pref = cuCmul(
+                make_cuDoubleComplex(static_cast<double>(parity), 0.0),
+                h2etmp[klshift]
+            );
+            temp[target] = cuCadd(temp[target], pref);
+        }
+    }
+
+    // Second loop: accumulate into output using axpy-like operation
+    cuDoubleComplex* cout = d_out + s1 * inc1;
+    const cuDoubleComplex* xptr = d_C;
+    
+    for (int ii = 0; ii < states1; ++ii) {
+        cuDoubleComplex ttt = temp[ii];
+        
+        // Perform axpy: cout[j] += ttt * xptr[j] for j in range(states2)
+        for (int j = 0; j < states2; ++j) {
+            int idx = j * inc2;
+            cuDoubleComplex contrib = cuCmul(ttt, xptr[idx]);
+
+            cout[idx].x += contrib.x;
+            cout[idx].y += contrib.y;
+        }
+        xptr += inc1;
+    }
+}
+
+extern "C" void lm_apply_array12_same_spin_opt_wrapper(
+    cuDoubleComplex* d_out,
+    const cuDoubleComplex* d_C,
+    const int* d_dexc,
+    const cuDoubleComplex* d_h1e,
+    const cuDoubleComplex* d_h2e,
+    int states1,
+    int states2,
+    int ndexc,
+    int norbs,
+    int inc1,
+    int inc2,
+    cuDoubleComplex* __restrict__ temp_global) // size states1*states1
+{
+    if (states1 == 0 || states2 == 0) return;
+
+    int blockSize = 256;
+    int gridSize = (states1 + blockSize - 1) / blockSize;
+
+    lm_apply_array12_same_spin_opt_kernel<<<gridSize, blockSize>>>(
+        d_out, d_C, d_dexc, d_h1e, d_h2e,
+        states1, states2, ndexc, norbs, inc1, inc2, temp_global);
+
+    cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        std::cerr << "Failed to launch lm_apply_array12_same_spin_opt_kernel ("
+                  << cudaGetErrorString(err) << ")\n";
+        throw std::runtime_error("lm_apply_array12_same_spin_opt_kernel launch failed");
+    }
+
+    err = cudaDeviceSynchronize();
+    if (err != cudaSuccess) {
+        std::cerr << "lm_apply_array12_same_spin_opt_kernel execution failed ("
+                  << cudaGetErrorString(err) << ")\n";
+        throw std::runtime_error("lm_apply_array12_same_spin_opt_kernel execution failed");
+    }
+}
+
+// ==============================================
+// LM Apply Array12 Diff Spin kernel and wrapper
+// ==============================================
+
+// Kernel to compute nsig and populate signs, coff, boff for a given orbid
+__global__ void lm_diff_spin_compute_nsig_kernel(
+    const int* __restrict__ d_adexc,
+    int* __restrict__ d_signs,
+    int* __restrict__ d_coff,
+    int* __restrict__ d_boff,
+    int* __restrict__ d_nsig,
+    int alpha_states,
+    int nadexc,
+    int orbid)
+{
+    int s1 = blockIdx.x * blockDim.x + threadIdx.x;
+    
+    if (s1 >= alpha_states) return;
+
+    for (int i = 0; i < nadexc; ++i) {
+        int idx = 3 * (s1 * nadexc + i);
+        int orbij = d_adexc[idx + 1];
+        
+        if (orbij == orbid) {
+            int pos = atomicAdd(d_nsig, 1);
+            d_signs[pos] = d_adexc[idx + 2];
+            d_coff[pos] = d_adexc[idx];
+            d_boff[pos] = s1;
+        }
+    }
+}
+
+// Kernel to compute ctemp array
+__global__ void lm_diff_spin_ctemp_kernel(
+    cuDoubleComplex* __restrict__ d_ctemp,
+    const cuDoubleComplex* __restrict__ d_C,
+    const int* __restrict__ d_signs,
+    const int* __restrict__ d_coff,
+    int beta_states,
+    int nsig)
+{
+    int isig = blockIdx.x * blockDim.x + threadIdx.x;
+    
+    if (isig >= nsig) return;
+
+    int offset = d_coff[isig];
+    const cuDoubleComplex* cptr = d_C + offset * beta_states;
+    cuDoubleComplex zsign = make_cuDoubleComplex(static_cast<double>(d_signs[isig]), 0.0);
+
+    for (int j = 0; j < beta_states; ++j) {
+        cuDoubleComplex contrib = cuCmul(zsign, cptr[j]);
+        atomicAdd_double(&d_ctemp[j * nsig + isig].x, contrib.x);
+        atomicAdd_double(&d_ctemp[j * nsig + isig].y, contrib.y);
+    }
+}
+
+// Kernel to compute vtemp and accumulate to output
+__global__ void lm_diff_spin_vtemp_kernel(
+    cuDoubleComplex* __restrict__ d_out,
+    const cuDoubleComplex* __restrict__ d_ctemp,
+    const int* __restrict__ d_bdexc,
+    const cuDoubleComplex* __restrict__ d_h2e,
+    const int* __restrict__ d_boff,
+    int beta_states,
+    int nbdexc,
+    int norbs,
+    int nsig,
+    int orbid)
+{
+    int s2 = blockIdx.x * blockDim.x + threadIdx.x;
+    
+    if (s2 >= beta_states) return;
+
+    const int norbs2 = norbs * norbs;
+    const cuDoubleComplex* tmperi = d_h2e + orbid * norbs2;
+
+    // Shared memory for vtemp
+    extern __shared__ cuDoubleComplex shared_vtemp[];
+    cuDoubleComplex* vtemp = &shared_vtemp[threadIdx.x * nsig];
+
+    // Initialize vtemp to zero
+    for (int kk = 0; kk < nsig; ++kk) {
+        vtemp[kk] = make_cuDoubleComplex(0.0, 0.0);
+    }
+
+    // Compute vtemp
+    for (int j = 0; j < nbdexc; ++j) {
+        int idx2 = d_bdexc[3 * (s2 * nbdexc + j)];
+        int parity = d_bdexc[3 * (s2 * nbdexc + j) + 2];
+        int orbkl = d_bdexc[3 * (s2 * nbdexc + j) + 1];
+        
+        cuDoubleComplex ttt = cuCmul(
+            make_cuDoubleComplex(static_cast<double>(parity), 0.0),
+            tmperi[orbkl]
+        );
+
+        const cuDoubleComplex* cctmp = d_ctemp + idx2 * nsig;
+        for (int isig = 0; isig < nsig; ++isig) {
+            cuDoubleComplex contrib = cuCmul(ttt, cctmp[isig]);
+            vtemp[isig] = cuCadd(vtemp[isig], contrib);
+        }
+    }
+
+    // Accumulate into output
+    cuDoubleComplex* tmpout = d_out + s2;
+    for (int isig = 0; isig < nsig; ++isig) {
+        int out_idx = beta_states * d_boff[isig];
+        atomicAdd_double(&tmpout[out_idx].x, vtemp[isig].x);
+        atomicAdd_double(&tmpout[out_idx].y, vtemp[isig].y);
+    }
+}
+
+extern "C" void lm_apply_array12_diff_spin_wrapper(
+    cuDoubleComplex* d_out,
+    const cuDoubleComplex* d_C,
+    const int* d_adexc,
+    const int* d_bdexc,
+    const cuDoubleComplex* d_h2e,
+    int alpha_states,
+    int beta_states,
+    int nadexc,
+    int nbdexc,
+    int norbs)
+{
+    const int norbs2 = norbs * norbs;
+    const int nadexc_tot = alpha_states * nadexc;
+
+    // Allocate device memory for intermediate arrays (max size)
+    int* d_signs;
+    int* d_coff;
+    int* d_boff;
+    int* d_nsig;
+    cuDoubleComplex* d_ctemp;
+
+    cudaMalloc(&d_signs, nadexc_tot * sizeof(int));
+    cudaMalloc(&d_coff, nadexc_tot * sizeof(int));
+    cudaMalloc(&d_boff, nadexc_tot * sizeof(int));
+    cudaMalloc(&d_nsig, sizeof(int));
+    cudaMalloc(&d_ctemp, nadexc_tot * beta_states * sizeof(cuDoubleComplex));
+
+    // Loop over all orbital pairs
+    for (int orbid = 0; orbid < norbs2; ++orbid) {
+        // Reset nsig counter
+        cudaMemset(d_nsig, 0, sizeof(int));
+        cudaMemset(d_ctemp, 0, nadexc_tot * beta_states * sizeof(cuDoubleComplex));
+
+        // Compute nsig and populate arrays for this orbid
+        int threadsPerBlock = 256;
+        int blocksPerGrid = (alpha_states + threadsPerBlock - 1) / threadsPerBlock;
+        
+        lm_diff_spin_compute_nsig_kernel<<<blocksPerGrid, threadsPerBlock>>>(
+            d_adexc, d_signs, d_coff, d_boff, d_nsig,
+            alpha_states, nadexc, orbid);
+        
+        cudaDeviceSynchronize();
+
+        // Get nsig value
+        int nsig;
+        cudaMemcpy(&nsig, d_nsig, sizeof(int), cudaMemcpyDeviceToHost);
+
+        if (nsig == 0) continue;
+
+        // Compute ctemp
+        blocksPerGrid = (nsig + threadsPerBlock - 1) / threadsPerBlock;
+        lm_diff_spin_ctemp_kernel<<<blocksPerGrid, threadsPerBlock>>>(
+            d_ctemp, d_C, d_signs, d_coff, beta_states, nsig);
+        
+        cudaDeviceSynchronize();
+
+        // Compute vtemp and accumulate to output
+        blocksPerGrid = (beta_states + threadsPerBlock - 1) / threadsPerBlock;
+        size_t sharedMemSize = threadsPerBlock * nsig * sizeof(cuDoubleComplex);
+        
+        lm_diff_spin_vtemp_kernel<<<blocksPerGrid, threadsPerBlock, sharedMemSize>>>(
+            d_out, d_ctemp, d_bdexc, d_h2e, d_boff,
+            beta_states, nbdexc, norbs, nsig, orbid);
+        
+        cudaDeviceSynchronize();
+    }
+
+    // Free device memory
+    cudaFree(d_signs);
+    cudaFree(d_coff);
+    cudaFree(d_boff);
+    cudaFree(d_nsig);
+    cudaFree(d_ctemp);
+
+    // Check for errors
+    cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        std::cerr << "lm_apply_array12_diff_spin_wrapper failed ("
+                  << cudaGetErrorString(err) << ")\n";
+        throw std::runtime_error("lm_apply_array12_diff_spin_wrapper execution failed");
+    }
+}

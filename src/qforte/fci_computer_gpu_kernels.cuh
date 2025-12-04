@@ -243,3 +243,68 @@ extern "C" void inplace_givens_update_real_tiled_wrapper(
     double factor,
     double acc_coeff1,
     double acc_coeff2);
+
+// ==============================================
+// LM Apply Array12 Same Spin kernels and wrappers
+// ==============================================
+
+__global__ void lm_apply_array12_same_spin_opt_kernel(
+    cuDoubleComplex* __restrict__ d_out,
+    const cuDoubleComplex* __restrict__ d_C,
+    const int* __restrict__ d_dexc,
+    const cuDoubleComplex* __restrict__ d_h1e,
+    const cuDoubleComplex* __restrict__ d_h2e,
+    int states1,
+    int states2,
+    int ndexc,
+    int norbs,
+    int inc1,
+    int inc2,
+    cuDoubleComplex* __restrict__ temp_global);
+
+extern "C" void lm_apply_array12_same_spin_opt_wrapper(
+    cuDoubleComplex* d_out,
+    const cuDoubleComplex* d_C,
+    const int* d_dexc,
+    const cuDoubleComplex* d_h1e,
+    const cuDoubleComplex* d_h2e,
+    int states1,
+    int states2,
+    int ndexc,
+    int norbs,
+    int inc1,
+    int inc2,
+    cuDoubleComplex* __restrict__ temp_global);
+
+// ==============================================
+// LM Apply Array12 Diff Spin kernels and wrappers
+// ==============================================
+
+__global__ void lm_apply_array12_diff_spin_kernel(
+    cuDoubleComplex* __restrict__ d_out,
+    const cuDoubleComplex* __restrict__ d_C,
+    const int* __restrict__ d_adexc,
+    const int* __restrict__ d_bdexc,
+    const cuDoubleComplex* __restrict__ d_h2e,
+    const int* __restrict__ d_signs,
+    const int* __restrict__ d_coff,
+    const int* __restrict__ d_boff,
+    int alpha_states,
+    int beta_states,
+    int nadexc,
+    int nbdexc,
+    int norbs,
+    int nsig,
+    int orbid);
+
+extern "C" void lm_apply_array12_diff_spin_wrapper(
+    cuDoubleComplex* d_out,
+    const cuDoubleComplex* d_C,
+    const int* d_adexc,
+    const int* d_bdexc,
+    const cuDoubleComplex* d_h2e,
+    int alpha_states,
+    int beta_states,
+    int nadexc,
+    int nbdexc,
+    int norbs);

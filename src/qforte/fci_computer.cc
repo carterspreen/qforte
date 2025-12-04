@@ -619,7 +619,7 @@ void FCIComputer::lm_apply_array12_same_spin_opt(
             }
         }
         const std::complex<double> *xptr = C_.data().data();
-        for (int ii = 0; ii < states1; ii++) {
+        for (int ii = 0; ii < states1; ii++) { 
             const std::complex<double> ttt = temp[ii];
             math_zaxpy(states2, ttt, xptr, inc2, cout, inc2);
             xptr += inc1;

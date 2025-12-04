@@ -277,6 +277,8 @@ std::complex<double> vector_dot(const TensorGPU& other) const;
  **/
 TensorGPU transpose() const;
 
+TensorGPU transpose_gpu() const;
+
 /**
  * Compute a new copy of this Tensor which is a transpose of this.
  *

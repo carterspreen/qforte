@@ -9,14 +9,14 @@ geom = [
     ('H', (0., 0., 2.0)),
     ('H', (0., 0., 3.0)), 
     ('H', (0., 0., 4.0)),
-    # ('H', (0., 0., 5.0)), 
-    # ('H', (0., 0., 6.0)),
-    # ('H', (0., 0., 7.0)), 
-    # ('H', (0., 0., 8.0)),
-    # ('H', (0., 0., 9.0)), 
-    # ('H', (0., 0.,10.0)),
-    # ('H', (0., 0.,11.0)), 
-    # ('H', (0., 0.,12.0))
+    ('H', (0., 0., 5.0)), 
+    ('H', (0., 0., 6.0)),
+    ('H', (0., 0., 7.0)), 
+    ('H', (0., 0., 8.0)),
+    ('H', (0., 0., 9.0)), 
+    ('H', (0., 0.,10.0)),
+    ('H', (0., 0.,11.0)), 
+    ('H', (0., 0.,12.0))
     ]
 
 mol = qf.system_factory(
@@ -106,8 +106,13 @@ if(app_tens):
     mo_teis_gpu.fill_from_tensor_cpu(mol.mo_teis, mol.mo_teis.shape())
     mo_teis_einsum_gpu.fill_from_tensor_cpu(mol.mo_teis_einsum, mol.mo_teis_einsum.shape())
 
+    mo_oeis_gpu.to_gpu()
+    mo_teis_gpu.to_gpu()
+    mo_teis_einsum_gpu.to_gpu()
+    fci_comp_gpu.to_gpu()
+
     timer.reset()
-    fci_comp_gpu.apply_tensor_spat_012bdy(
+    fci_comp_gpu.apply_tensor_spat_012bdy_gpu(
         mol.nuclear_repulsion_energy, 
         mo_oeis_gpu, 
         mo_teis_gpu, 
@@ -115,6 +120,7 @@ if(app_tens):
         norb)
     timer.record('FCI GPU apply tensor')
 
+    fci_comp_gpu.to_cpu()
     Cfci = fci_comp_cpu.get_state_deep()
     Cfci_gpu = qf.Tensor(Cfci.shape(), "Cfci_gpu")
     fci_comp_gpu.copy_to_tensor_cpu(Cfci_gpu)
@@ -136,6 +142,9 @@ if(app_tens):
 
 print("\n\n")
 print(timer)
+
+fci_gpu_timer = fci_comp_gpu.get_acc_timer()
+print(fci_gpu_timer.acc_str_table())
 
 # OMP_NUM_THREADS=4 OMP_PROC_BIND=TRUE OMP_DYNAMIC=FALSE \
 # OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 \

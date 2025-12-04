@@ -1059,6 +1059,22 @@ TensorGPU TensorGPU::transpose() const
     return T;
 }
 
+TensorGPU TensorGPU::transpose_gpu() const
+{
+    gpu_error();
+    ndim_error(2);
+
+    TensorGPU T({shape_[1], shape_[0]}, name_ + "_HT", true, data_type_);
+    if (data_type_ == "complex") {
+        for (size_t i=0;i<shape_[0];++i) for (size_t j=0;j<shape_[1];++j) T.d_data_[j*shape_[0]+i] = cuConj(d_data_[i*shape_[1]+j]);
+    } else if (data_type_ == "real") {
+        for (size_t i=0;i<shape_[0];++i) for (size_t j=0;j<shape_[1];++j) T.d_re_data_[j*shape_[0]+i] = d_re_data_[i*shape_[1]+j];
+    } else {
+        throw std::runtime_error("Unsupported data type in conj_transpose.");
+    }
+    return T;
+}
+
 TensorGPU TensorGPU::general_transpose(const std::vector<size_t>& axes) const
 {
     cpu_error();

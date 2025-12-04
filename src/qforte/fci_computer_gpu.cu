@@ -169,7 +169,7 @@ void FCIComputerGPU::set_element(
 void FCIComputerGPU::gpu_error() const {
 
     if (not on_gpu_) {
-        throw std::runtime_error("Data not on GPU for FCIComputerGPU" + name_);
+        throw std::runtime_error("Data not on GPU for FCIComputerGPU " + name_);
     }
 
 }
@@ -177,7 +177,7 @@ void FCIComputerGPU::gpu_error() const {
 void FCIComputerGPU::cpu_error() const {
 
     if (on_gpu_) {
-        throw std::runtime_error("Data not on CPU for FCIComputerGPU" + name_);
+        throw std::runtime_error("Data not on CPU for FCIComputerGPU " + name_);
     }
 
 }
@@ -247,24 +247,27 @@ void FCIComputerGPU::apply_tensor_spin_1bdy(const TensorGPU& h1e, size_t norb) {
 }
 
 /// apply TensorGPUs represending 1-body and 2-body spatial-orbital indexed operator to the current state 
-void FCIComputerGPU::apply_tensor_spat_12bdy(
+void FCIComputerGPU::apply_tensor_spat_12bdy_gpu(
     const TensorGPU& h1e, 
     const TensorGPU& h2e, 
-    const TensorGPU& h2e_einsum, 
-    size_t norb) 
-{
+    TensorGPU& h2e_einsum, 
+    size_t norb) {
+
+    gpu_error();
+
     if(h1e.size() != (norb) * (norb)){
-        throw std::invalid_argument("Expecting h1e to be nmo x nmo for apply_tensor_spat_12bdy");
+        throw std::invalid_argument("Expecting h1e to be nmo x nmo for apply_tensor_spat_12bdy_gpu");
     }
 
     if(h2e.size() != (norb) * (norb) * (norb) * (norb) ){
-        throw std::invalid_argument("Expecting h2e to be nso x nso x nso nso for apply_tensor_spin_12bdy");
+        throw std::invalid_argument("Expecting h2e to be nso x nso x nso x nso for apply_tensor_spat_12bdy_gpu");
     }
 
-    TensorGPU Cnew({nalfa_strs_, nbeta_strs_}, "Cnew");
-    Cnew.zero();
+    TensorGPU Cnew({nalfa_strs_, nbeta_strs_}, "Cnew", true);
+    Cnew.zero_gpu();
 
-    lm_apply_array12_same_spin_opt_cpu(
+    timer_.acc_begin("=> same spin outer");
+    lm_apply_array12_same_spin_opt_gpu(
         Cnew, 
         graph_.read_dexca_vec(), // dexca_tmp
         nalfa_strs_,
@@ -274,10 +277,14 @@ void FCIComputerGPU::apply_tensor_spat_12bdy(
         h2e,
         norb_,
         true);
+    timer_.acc_end("=> same spin outer");
 
-    Cnew.transpose();
-        
-    lm_apply_array12_same_spin_opt_cpu(
+    timer_.acc_begin("=> transpose");
+    Cnew.transpose_gpu();
+    timer_.acc_end("=> transpose");
+
+    timer_.acc_begin("=> same spin outer");    
+    lm_apply_array12_same_spin_opt_gpu(
         Cnew, 
         graph_.read_dexcb_vec(),
         nalfa_strs_,
@@ -287,10 +294,14 @@ void FCIComputerGPU::apply_tensor_spat_12bdy(
         h2e,
         norb_,
         false);
+    timer_.acc_end("=> same spin outer");
 
-    Cnew.transpose();
+    timer_.acc_begin("=> transpose");
+    Cnew.transpose_gpu();
+    timer_.acc_end("=> transpose");
 
-    lm_apply_array12_diff_spin_opt_cpu(
+    timer_.acc_begin("=> diff spin outer");
+    lm_apply_array12_diff_spin_opt_gpu(
         Cnew,
         graph_.read_dexca_vec(),
         graph_.read_dexcb_vec(),
@@ -300,6 +311,7 @@ void FCIComputerGPU::apply_tensor_spat_12bdy(
         graph_.get_ndexca(),
         h2e_einsum, 
         norb_); 
+    timer_.acc_end("=> diff spin outer");
 
     C_ = Cnew;
 }
@@ -307,16 +319,18 @@ void FCIComputerGPU::apply_tensor_spat_12bdy(
 /// apply TensorGPUs represending 1-body and 2-body spatial-orbital indexed operator
 /// as well as a constant to the current state 
 /// TODO: changing to be GPU implementation
-void FCIComputerGPU::apply_tensor_spat_012bdy(
+void FCIComputerGPU::apply_tensor_spat_012bdy_gpu(
     const std::complex<double> h0e,
     const TensorGPU& h1e, 
     const TensorGPU& h2e, 
-    const TensorGPU& h2e_einsum, 
+    TensorGPU& h2e_einsum, 
     size_t norb) 
 {
+    gpu_error();
+
     TensorGPU Cold = C_;
-    
-    apply_tensor_spat_12bdy(
+
+    apply_tensor_spat_12bdy_gpu(
         h1e,
         h2e,
         h2e_einsum,
@@ -412,7 +426,7 @@ void FCIComputerGPU::apply_array_1bdy_cpu(
     }
 }
 
-void FCIComputerGPU::lm_apply_array12_same_spin_opt_cpu(
+void FCIComputerGPU::lm_apply_array12_same_spin_opt_gpu(
     TensorGPU& out,
     const std::vector<int>& dexc,
     const int alpha_states,
@@ -423,49 +437,50 @@ void FCIComputerGPU::lm_apply_array12_same_spin_opt_cpu(
     const int norbs,
     const bool is_alpha)
 {
-    cpu_error();
+    gpu_error();
+
+    timer_.acc_begin("==> same spin data transfer");
 
     const int states1 = is_alpha ? alpha_states : beta_states;
     const int states2 = is_alpha ? beta_states : alpha_states;
     const int inc1 = is_alpha ? beta_states : 1;
     const int inc2 = is_alpha ? 1 : beta_states;
 
-    std::vector<std::complex<double>> temp(states1, 0.0);
+    // Transfer dexc to device
+    thrust::device_vector<int> d_dexc(dexc.begin(), dexc.end());
 
-    for (int s1 = 0; s1 < states1; ++s1) {
-        std::fill(temp.begin(), temp.end(), 0.0);
-        const int *cdexc = dexc.data() + 3 * s1 * ndexc;
-        const int *lim1 = cdexc + 3 * ndexc;
-        std::complex<double> *cout = out.data().data() + s1 * inc1;
+    // Allocate temp_global on device: size states1 * states1
+    thrust::device_vector<cuDoubleComplex> d_temp(states1 * states1);
 
-        for (; cdexc < lim1; cdexc = cdexc + 3) {
-            const int s2 = cdexc[0];
-            const int ijshift = cdexc[1];
-            const int parity1 = cdexc[2];
-            const int *cdexc2 = dexc.data() + 3 * s2 * ndexc;
-            const int *lim2 = cdexc2 + 3 * ndexc;
-            const int h2e_id = ijshift * norbs * norbs;
-            const std::complex<double> *h2etmp = h2e.read_h_data().data() + h2e_id;
-            temp[s2] += static_cast<double>(parity1) * h1e.read_h_data()[ijshift];
+    // Get device pointers
+    cuDoubleComplex* d_out = thrust::raw_pointer_cast(out.d_data().data());
+    const cuDoubleComplex* d_C = thrust::raw_pointer_cast(C_.d_data().data());
+    const int* d_dexc_ptr = thrust::raw_pointer_cast(d_dexc.data());
+    const cuDoubleComplex* d_h1e = thrust::raw_pointer_cast(h1e.read_d_data().data());
+    const cuDoubleComplex* d_h2e = thrust::raw_pointer_cast(h2e.read_d_data().data());
+    cuDoubleComplex* d_temp_ptr = thrust::raw_pointer_cast(d_temp.data());
 
-            for (; cdexc2 < lim2; cdexc2 += 3) {
-                const int target = cdexc2[0];
-                const int klshift = cdexc2[1];
-                const int parity = cdexc2[2] * parity1;
-                const std::complex<double> pref = static_cast<double>(parity) * h2etmp[klshift];
-                temp[target] += pref;
-            }
-        }
-        const std::complex<double> *xptr = C_.data().data();
-        for (int ii = 0; ii < states1; ii++) {
-            const std::complex<double> ttt = temp[ii];
-            math_zaxpy(states2, ttt, xptr, inc2, cout, inc2);
-            xptr += inc1;
-        }
-    }
+    timer_.acc_end("==> same spin data transfer");
+
+    timer_.acc_begin("==> same spin kernel");
+    // Call GPU kernel wrapper
+    lm_apply_array12_same_spin_opt_wrapper(
+        d_out,
+        d_C,
+        d_dexc_ptr,
+        d_h1e,
+        d_h2e,
+        states1,
+        states2,
+        ndexc,
+        norbs,
+        inc1,
+        inc2,
+        d_temp_ptr);
+    timer_.acc_end("==> same spin kernel");
 }
 
-void FCIComputerGPU::lm_apply_array12_diff_spin_opt_cpu(
+void FCIComputerGPU::lm_apply_array12_diff_spin_opt_gpu(
     TensorGPU& out,
     const std::vector<int>& adexc,
     const std::vector<int>& bdexc,
@@ -473,10 +488,14 @@ void FCIComputerGPU::lm_apply_array12_diff_spin_opt_cpu(
     const int beta_states,
     const int nadexc,
     const int nbdexc,
-    const TensorGPU& h2e,
+    TensorGPU& h2e,
     const int norbs)
 {
-    cpu_error();
+    gpu_error();
+
+    h2e.to_cpu();
+    out.to_cpu();
+    C_.to_cpu();
 
     const int nadexc_tot = alpha_states * nadexc;
     const int norbs2 = norbs * norbs;
@@ -548,6 +567,52 @@ void FCIComputerGPU::lm_apply_array12_diff_spin_opt_cpu(
             }
         }
     }
+
+    h2e.to_gpu();
+    out.to_gpu();
+    C_.to_gpu();
+
+    // const int nadexc_tot = alpha_states * nadexc;
+    // const int norbs2 = norbs * norbs;
+
+    // // Allocate host arrays
+    // std::vector<int> signs(nadexc_tot);
+    // std::vector<int> coff(nadexc_tot);
+    // std::vector<int> boff(nadexc_tot);
+
+    // // Count nest
+    // int nest = 0;
+    // for (int s1 = 0; s1 < alpha_states; ++s1) {
+    //     for (int i = 0; i < nadexc; ++i) {
+    //         const int orbij = adexc[3 * (s1 * nadexc + i) + 1];
+    //         if (orbij == 0) ++nest;
+    //     }
+    // }
+
+    // // Allocate device memory
+    // thrust::device_vector<int> d_adexc(adexc.begin(), adexc.end());
+    // thrust::device_vector<int> d_bdexc(bdexc.begin(), bdexc.end());
+    // thrust::device_vector<cuDoubleComplex> d_ctemp(nest * alpha_states);
+
+    // // Get device pointers
+    // cuDoubleComplex* d_out = thrust::raw_pointer_cast(out.d_data().data());
+    // const cuDoubleComplex* d_C = thrust::raw_pointer_cast(C_.d_data().data());
+    // const int* d_adexc_ptr = thrust::raw_pointer_cast(d_adexc.data());
+    // const int* d_bdexc_ptr = thrust::raw_pointer_cast(d_bdexc.data());
+    // const cuDoubleComplex* d_h2e = thrust::raw_pointer_cast(h2e.d_data().data());
+
+    // // Call GPU kernel wrapper
+    // lm_apply_array12_diff_spin_wrapper(
+    //     d_out,
+    //     d_C,
+    //     d_adexc_ptr,
+    //     d_bdexc_ptr,
+    //     d_h2e,
+    //     alpha_states,
+    //     beta_states,
+    //     nadexc,
+    //     nbdexc,
+    //     norbs);
 }
 
 /// TODO: Not implemented in GPU so skipping
@@ -2522,12 +2587,12 @@ std::complex<double> FCIComputerGPU::get_exp_val_tensor_cpu(
     const std::complex<double> h0e, 
     const TensorGPU& h1e, 
     const TensorGPU& h2e, 
-    const TensorGPU& h2e_einsum, 
+    TensorGPU& h2e_einsum, 
     size_t norb)
 {
     TensorGPU Cin = C_;
 
-    apply_tensor_spat_012bdy(
+    apply_tensor_spat_012bdy_gpu(
         h0e,
         h1e, 
         h2e, 
