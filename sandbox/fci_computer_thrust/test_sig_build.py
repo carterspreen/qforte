@@ -16,7 +16,11 @@ geom = [
     ('H', (0., 0., 9.0)), 
     ('H', (0., 0.,10.0)),
     ('H', (0., 0.,11.0)), 
-    ('H', (0., 0.,12.0))
+    ('H', (0., 0.,12.0)),
+    ('H', (0., 0.,13.0)), 
+    ('H', (0., 0.,14.0)),
+    # ('H', (0., 0.,15.0)), 
+    # ('H', (0., 0.,16.0))
     ]
 
 mol = qf.system_factory(
@@ -145,6 +149,9 @@ print(timer)
 
 fci_gpu_timer = fci_comp_gpu.get_acc_timer()
 print(fci_gpu_timer.acc_str_table())
+
+fci_timer = fci_comp_cpu.get_acc_timer()
+print(fci_timer.acc_str_table())
 
 # OMP_NUM_THREADS=4 OMP_PROC_BIND=TRUE OMP_DYNAMIC=FALSE \
 # OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 \

@@ -401,6 +401,7 @@ void FCIComputer::apply_tensor_spat_12bdy(
     Tensor Cnew({nalfa_strs_, nbeta_strs_}, "Cnew");
     Cnew.zero();
 
+    timer_.acc_begin("=> same spin apply");
     lm_apply_array12_same_spin_opt(
         Cnew, 
         graph_.read_dexca_vec(), // dexca_tmp
@@ -411,9 +412,12 @@ void FCIComputer::apply_tensor_spat_12bdy(
         h2e,
         norb_,
         true);
+    timer_.acc_end("=> same spin apply");
 
+    ///TODO: Doesn't do anything... remove?
     Cnew.transpose();
         
+    timer_.acc_begin("=> same spin apply");
     lm_apply_array12_same_spin_opt(
         Cnew, 
         graph_.read_dexcb_vec(),
@@ -424,9 +428,11 @@ void FCIComputer::apply_tensor_spat_12bdy(
         h2e,
         norb_,
         false);
+    timer_.acc_end("=> same spin apply");
 
     Cnew.transpose();
 
+    timer_.acc_begin("=> diff spin apply");
     lm_apply_array12_diff_spin_opt(
         Cnew,
         graph_.read_dexca_vec(),
@@ -437,6 +443,7 @@ void FCIComputer::apply_tensor_spat_12bdy(
         graph_.get_ndexca(),
         h2e_einsum, 
         norb_); 
+    timer_.acc_end("=> diff spin apply");
 
     C_ = Cnew;
 }

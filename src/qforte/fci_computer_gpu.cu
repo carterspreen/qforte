@@ -279,9 +279,11 @@ void FCIComputerGPU::apply_tensor_spat_12bdy_gpu(
         true);
     timer_.acc_end("=> same spin outer");
 
-    timer_.acc_begin("=> transpose");
-    Cnew.transpose_gpu();
-    timer_.acc_end("=> transpose");
+    /// TODO: ask nick: why was this transpose here?
+
+    // timer_.acc_begin("=> transpose");
+    // Cnew.transpose_gpu();
+    // timer_.acc_end("=> transpose");
 
     timer_.acc_begin("=> same spin outer");    
     lm_apply_array12_same_spin_opt_gpu(
@@ -296,9 +298,9 @@ void FCIComputerGPU::apply_tensor_spat_12bdy_gpu(
         false);
     timer_.acc_end("=> same spin outer");
 
-    timer_.acc_begin("=> transpose");
-    Cnew.transpose_gpu();
-    timer_.acc_end("=> transpose");
+    // timer_.acc_begin("=> transpose");
+    // Cnew.transpose_gpu();
+    // timer_.acc_end("=> transpose");
 
     timer_.acc_begin("=> diff spin outer");
     lm_apply_array12_diff_spin_opt_gpu(
@@ -493,18 +495,15 @@ void FCIComputerGPU::lm_apply_array12_diff_spin_opt_gpu(
 {
     gpu_error();
 
-    h2e.to_cpu();
-    out.to_cpu();
-    C_.to_cpu();
-
     const int nadexc_tot = alpha_states * nadexc;
-    const int norbs2 = norbs * norbs;
-    const int one = 1;
+    // const int norbs2 = norbs * norbs;
 
+    // Allocate host arrays
     std::vector<int> signs(nadexc_tot);
     std::vector<int> coff(nadexc_tot);
     std::vector<int> boff(nadexc_tot);
 
+    // Count nest
     int nest = 0;
     for (int s1 = 0; s1 < alpha_states; ++s1) {
         for (int i = 0; i < nadexc; ++i) {
@@ -513,74 +512,43 @@ void FCIComputerGPU::lm_apply_array12_diff_spin_opt_gpu(
         }
     }
 
-    std::vector<std::complex<double>> vtemp(nest);
-    std::vector<std::complex<double>> ctemp(nest * alpha_states);
+    // Allocate device memory
+    thrust::device_vector<int> d_adexc(adexc.begin(), adexc.end());
+    thrust::device_vector<int> d_bdexc(bdexc.begin(), bdexc.end());
+    thrust::device_vector<cuDoubleComplex> d_ctemp(nest * alpha_states);
 
-    for (int orbid = 0; orbid < norbs2; ++orbid) {
-        int nsig = 0;
-        for (int s1 = 0; s1 < alpha_states; ++s1) {
-            for (int i = 0; i < nbdexc; ++i) {
-                const int orbij = adexc[3 * (s1 * nadexc + i) + 1];
-                if (orbij == orbid) {
-                    signs[nsig] = adexc[3 * (s1 * nadexc + i) + 2];
-                    coff[nsig] = adexc[3 * (s1 * nadexc + i)];
-                    boff[nsig] = s1;
-                    ++nsig;
-                }
-            }
-        }
+    // Get device pointers
+    cuDoubleComplex* d_out = thrust::raw_pointer_cast(out.d_data().data());
+    const cuDoubleComplex* d_C = thrust::raw_pointer_cast(C_.d_data().data());
+    const int* d_adexc_ptr = thrust::raw_pointer_cast(d_adexc.data());
+    const int* d_bdexc_ptr = thrust::raw_pointer_cast(d_bdexc.data());
+    const cuDoubleComplex* d_h2e = thrust::raw_pointer_cast(h2e.d_data().data());
 
-        std::fill(ctemp.begin(), ctemp.end(), std::complex<double>(0.0));
+    // Call GPU kernel wrapper
+    lm_apply_array12_diff_spin_wrapper(
+        d_out,
+        d_C,
+        d_adexc_ptr,
+        d_bdexc_ptr,
+        d_h2e,
+        alpha_states,
+        beta_states,
+        nadexc,
+        nbdexc,
+        norbs);
 
-        for (int isig = 0; isig < nsig; ++isig) {
-            const int offset = coff[isig];
-            const std::complex<double> *cptr = C_.data().data() + offset * beta_states;
-            std::complex<double> *tptr = ctemp.data() + isig;
-            const std::complex<double> zsign = signs[isig];
-            math_zaxpy(beta_states, zsign, cptr, one, tptr, nsig);
-        }
-
-        const std::complex<double> *tmperi = h2e.read_h_data().data() + orbid * norbs2;
-
-        for (int s2 = 0; s2 < beta_states; ++s2) {
-            
-            // TODO(Tyler): need for open mp
-            // const int ithrd = 0;
-            // const std::complex<double> *vpt = vtemp.data() + ithrd * nsig;
-            // for (int kk = 0; kk < nsig; ++kk) vpt[kk] = 0.0;
-
-            std::fill(vtemp.begin(), vtemp.begin() + nsig, std::complex<double>(0.0));
-            
-
-            for (int j = 0; j < nbdexc; ++j) {
-                int idx2 = bdexc[3 * (s2 * nbdexc + j)];
-                const int parity = bdexc[3 * (s2 * nbdexc + j) + 2];
-                const int orbkl = bdexc[3 * (s2 * nbdexc + j) + 1];
-                const std::complex<double> ttt = std::complex<double>(parity, 0.0) * tmperi[orbkl];
-                const std::complex<double> *cctmp = ctemp.data() + idx2 * nsig;
-                math_zaxpy(nsig, ttt, cctmp, one, vtemp.data(), one);
-            }
-
-            std::complex<double> *tmpout = out.data().data() + s2;
-            for (int isig = 0; isig < nsig; ++isig) {
-                tmpout[beta_states * boff[isig]] += vtemp[isig];
-            }
-        }
-    }
-
-    h2e.to_gpu();
-    out.to_gpu();
-    C_.to_gpu();
+    // h2e.to_cpu();
+    // out.to_cpu();
+    // C_.to_cpu();
 
     // const int nadexc_tot = alpha_states * nadexc;
     // const int norbs2 = norbs * norbs;
+    // const int one = 1;
 
-    // // Allocate host arrays
     // std::vector<int> signs(nadexc_tot);
     // std::vector<int> coff(nadexc_tot);
     // std::vector<int> boff(nadexc_tot);
 
-    // // Count nest
     // int nest = 0;
     // for (int s1 = 0; s1 < alpha_states; ++s1) {
     //     for (int i = 0; i < nadexc; ++i) {
@@ -589,30 +557,64 @@ void FCIComputerGPU::lm_apply_array12_diff_spin_opt_gpu(
     //     }
     // }
 
-    // // Allocate device memory
-    // thrust::device_vector<int> d_adexc(adexc.begin(), adexc.end());
-    // thrust::device_vector<int> d_bdexc(bdexc.begin(), bdexc.end());
-    // thrust::device_vector<cuDoubleComplex> d_ctemp(nest * alpha_states);
+    // std::vector<std::complex<double>> vtemp(nest);
+    // std::vector<std::complex<double>> ctemp(nest * alpha_states);
 
-    // // Get device pointers
-    // cuDoubleComplex* d_out = thrust::raw_pointer_cast(out.d_data().data());
-    // const cuDoubleComplex* d_C = thrust::raw_pointer_cast(C_.d_data().data());
-    // const int* d_adexc_ptr = thrust::raw_pointer_cast(d_adexc.data());
-    // const int* d_bdexc_ptr = thrust::raw_pointer_cast(d_bdexc.data());
-    // const cuDoubleComplex* d_h2e = thrust::raw_pointer_cast(h2e.d_data().data());
+    // for (int orbid = 0; orbid < norbs2; ++orbid) {
+    //     int nsig = 0;
+    //     for (int s1 = 0; s1 < alpha_states; ++s1) {
+    //         for (int i = 0; i < nbdexc; ++i) {
+    //             const int orbij = adexc[3 * (s1 * nadexc + i) + 1];
+    //             if (orbij == orbid) {
+    //                 signs[nsig] = adexc[3 * (s1 * nadexc + i) + 2];
+    //                 coff[nsig] = adexc[3 * (s1 * nadexc + i)];
+    //                 boff[nsig] = s1;
+    //                 ++nsig;
+    //             }
+    //         }
+    //     }
 
-    // // Call GPU kernel wrapper
-    // lm_apply_array12_diff_spin_wrapper(
-    //     d_out,
-    //     d_C,
-    //     d_adexc_ptr,
-    //     d_bdexc_ptr,
-    //     d_h2e,
-    //     alpha_states,
-    //     beta_states,
-    //     nadexc,
-    //     nbdexc,
-    //     norbs);
+    //     std::fill(ctemp.begin(), ctemp.end(), std::complex<double>(0.0));
+
+    //     for (int isig = 0; isig < nsig; ++isig) {
+    //         const int offset = coff[isig];
+    //         const std::complex<double> *cptr = C_.data().data() + offset * beta_states;
+    //         std::complex<double> *tptr = ctemp.data() + isig;
+    //         const std::complex<double> zsign = signs[isig];
+    //         math_zaxpy(beta_states, zsign, cptr, one, tptr, nsig);
+    //     }
+
+    //     const std::complex<double> *tmperi = h2e.read_h_data().data() + orbid * norbs2;
+
+    //     for (int s2 = 0; s2 < beta_states; ++s2) {
+            
+    //         // TODO(Tyler): need for open mp
+    //         // const int ithrd = 0;
+    //         // const std::complex<double> *vpt = vtemp.data() + ithrd * nsig;
+    //         // for (int kk = 0; kk < nsig; ++kk) vpt[kk] = 0.0;
+
+    //         std::fill(vtemp.begin(), vtemp.begin() + nsig, std::complex<double>(0.0));
+            
+
+    //         for (int j = 0; j < nbdexc; ++j) {
+    //             int idx2 = bdexc[3 * (s2 * nbdexc + j)];
+    //             const int parity = bdexc[3 * (s2 * nbdexc + j) + 2];
+    //             const int orbkl = bdexc[3 * (s2 * nbdexc + j) + 1];
+    //             const std::complex<double> ttt = std::complex<double>(parity, 0.0) * tmperi[orbkl];
+    //             const std::complex<double> *cctmp = ctemp.data() + idx2 * nsig;
+    //             math_zaxpy(nsig, ttt, cctmp, one, vtemp.data(), one);
+    //         }
+
+    //         std::complex<double> *tmpout = out.data().data() + s2;
+    //         for (int isig = 0; isig < nsig; ++isig) {
+    //             tmpout[beta_states * boff[isig]] += vtemp[isig];
+    //         }
+    //     }
+    // }
+
+    // h2e.to_gpu();
+    // out.to_gpu();
+    // C_.to_gpu();
 }
 
 /// TODO: Not implemented in GPU so skipping
