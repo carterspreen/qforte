@@ -415,7 +415,7 @@ void FCIComputer::apply_tensor_spat_12bdy(
     timer_.acc_end("=> same spin apply");
 
     ///TODO: Doesn't do anything... remove?
-    Cnew.transpose();
+    // Cnew.transpose();
         
     timer_.acc_begin("=> same spin apply");
     lm_apply_array12_same_spin_opt(
@@ -430,7 +430,7 @@ void FCIComputer::apply_tensor_spat_12bdy(
         false);
     timer_.acc_end("=> same spin apply");
 
-    Cnew.transpose();
+    // Cnew.transpose();
 
     timer_.acc_begin("=> diff spin apply");
     lm_apply_array12_diff_spin_opt(

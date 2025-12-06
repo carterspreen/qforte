@@ -838,70 +838,83 @@ __global__ void lm_apply_array12_same_spin_opt_kernel(
     int norbs,
     int inc1,
     int inc2,
-    cuDoubleComplex* __restrict__ temp_global) // size states1*states1
+    cuDoubleComplex* __restrict__ temp_global)
 {
-    // Each thread handles one s1 state
-    int s1 = blockIdx.x * blockDim.x + threadIdx.x;
+    int s1 = blockIdx.x;         // one s1 array per block
     if (s1 >= states1) return;
 
     cuDoubleComplex* temp = temp_global + s1 * states1;
 
-    // Initialize temp to zero
-    for (int i = 0; i < states1; ++i) {
+    // Initialize temp to zero - parallelize across threads
+    for (int i = threadIdx.x; i < states1; i += blockDim.x) {
         temp[i] = make_cuDoubleComplex(0.0, 0.0);
     }
+    
+    // Ensure all threads have initialized temp before continuing
+    __syncthreads();
 
     const int* cdexc = d_dexc + 3 * s1 * ndexc;
-    const int* lim1 = cdexc + 3 * ndexc;
 
-    // First loop: build temp array
-    for (; cdexc < lim1; cdexc += 3) {
-        const int s2 = cdexc[0];
-        const int ijshift = cdexc[1];
-        const int parity1 = cdexc[2];
+    // let each thread handle an index of s1 and build associated
+    // h1e contribution & all h2e contributions
+    for (int i = threadIdx.x; i < ndexc; i += blockDim.x) {
+        const int* cdex_base = cdexc + 3 * i;
         
-        const int* cdexc2 = d_dexc + 3 * s2 * ndexc;
-        const int* lim2 = cdexc2 + 3 * ndexc;
-        const int h2e_id = ijshift * norbs * norbs;
-        const cuDoubleComplex* h2etmp = d_h2e + h2e_id;
-        
-        // Add h1e contribution
+        const int s2 = cdex_base[0];
+        const int ijshift = cdex_base[1];
+        const int parity1 = cdex_base[2];
+
         cuDoubleComplex h1e_contrib = cuCmul(
             make_cuDoubleComplex(static_cast<double>(parity1), 0.0),
             d_h1e[ijshift]
         );
-        temp[s2] = cuCadd(temp[s2], h1e_contrib);
 
-        // Inner loop over cdexc2
-        for (; cdexc2 < lim2; cdexc2 += 3) {
-            const int target = cdexc2[0];
-            const int klshift = cdexc2[1];
-            const int parity = cdexc2[2] * parity1;
-            
+        // atomics are slow but necessary here due to potential write conflicts
+        atomicAdd(&(temp[s2].x), h1e_contrib.x);
+        atomicAdd(&(temp[s2].y), h1e_contrib.y);
+
+        // h2e contributions
+        const int* cdexc2 = d_dexc + 3 * s2 * ndexc;
+        const int h2e_id = ijshift * norbs * norbs;
+        const cuDoubleComplex* h2etmp = d_h2e + h2e_id;
+
+        // Iterate through all ndexc entries for s2
+        for (int j = 0; j < ndexc; ++j) {
+            const int* cdex2_ptr = cdexc2 + 3 * j;
+            int target  = cdex2_ptr[0];
+            int klshift = cdex2_ptr[1];
+            int parity2 = cdex2_ptr[2];
+        
             cuDoubleComplex pref = cuCmul(
-                make_cuDoubleComplex(static_cast<double>(parity), 0.0),
+                make_cuDoubleComplex(double(parity1 * parity2), 0.0),
                 h2etmp[klshift]
             );
-            temp[target] = cuCadd(temp[target], pref);
+            atomicAdd(&temp[target].x, pref.x);
+            atomicAdd(&temp[target].y, pref.y);
         }
     }
 
-    // Second loop: accumulate into output using axpy-like operation
+    // need to get everything in temp ready to use
+    __syncthreads();
+
     cuDoubleComplex* cout = d_out + s1 * inc1;
-    const cuDoubleComplex* xptr = d_C;
-    
-    for (int ii = 0; ii < states1; ++ii) {
+
+    // let threads handle individual temp contributions to cout
+    // This matches the CPU version: for each ii, do zaxpy operation
+    // CPU: xptr starts at C_.data() and advances by inc1 each iteration
+    for (int ii = threadIdx.x; ii < states1; ii += blockDim.x) {
         cuDoubleComplex ttt = temp[ii];
+        const cuDoubleComplex* xptr_ii = d_C + ii * inc1;
         
-        // Perform axpy: cout[j] += ttt * xptr[j] for j in range(states2)
+        // Perform axpy: cout[j*inc2] += ttt * xptr_ii[j*inc2] for j in range(states2)
+        // This is a strided vector operation matching math_zaxpy(states2, ttt, xptr, inc2, cout, inc2)
         for (int j = 0; j < states2; ++j) {
             int idx = j * inc2;
-            cuDoubleComplex contrib = cuCmul(ttt, xptr[idx]);
+            cuDoubleComplex contrib = cuCmul(ttt, xptr_ii[idx]);
 
-            cout[idx].x += contrib.x;
-            cout[idx].y += contrib.y;
+            atomicAdd(&cout[idx].x, contrib.x);
+            atomicAdd(&cout[idx].y, contrib.y);
         }
-        xptr += inc1;
     }
 }
 
@@ -921,12 +934,13 @@ extern "C" void lm_apply_array12_same_spin_opt_wrapper(
 {
     if (states1 == 0 || states2 == 0) return;
 
+    int gridSize  = states1;         // one block per s1
     int blockSize = 256;
-    int gridSize = (states1 + blockSize - 1) / blockSize;
 
     lm_apply_array12_same_spin_opt_kernel<<<gridSize, blockSize>>>(
         d_out, d_C, d_dexc, d_h1e, d_h2e,
         states1, states2, ndexc, norbs, inc1, inc2, temp_global);
+
 
     cudaError_t err = cudaGetLastError();
     if (err != cudaSuccess) {

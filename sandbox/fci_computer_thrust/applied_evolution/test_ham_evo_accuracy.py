@@ -154,31 +154,31 @@ for _ in range(N):
     # print(fci_comp2)
     # print(fci_comp2.get_state().norm())
 
-    fci_comp_gpu.to_cpu()
+    # fci_comp_gpu.to_cpu()
 
-    C1 = fci_comp1.get_state_deep()
-    C1_dup = fci_comp1.get_state_deep()
-    # C2 = fci_comp2.get_state_deep()
-    C3 = qf.Tensor(C1.shape(), "C3")
-    fci_comp_gpu.copy_to_tensor_cpu(C3)
+    # C1 = fci_comp1.get_state_deep()
+    # C1_dup = fci_comp1.get_state_deep()
+    # # C2 = fci_comp2.get_state_deep()
+    # C3 = qf.Tensor(C1.shape(), "C3")
+    # fci_comp_gpu.copy_to_tensor_cpu(C3)
 
-    # print(f"C1: {C1}")
-    # print(f"C2: {C2}")
-    # print(f"C3: {C3}")
+    # # print(f"C1: {C1}")
+    # # print(f"C2: {C2}")
+    # # print(f"C3: {C3}")
 
-    # C1.subtract(C2)
-    # C2.subtract(C3)
-    C1_dup.subtract(C3)
+    # # C1.subtract(C2)
+    # # C2.subtract(C3)
+    # C1_dup.subtract(C3)
 
     
 
-    # print(C1)
-    # print(C3)
-    # print(f"deltaC.norm() {C1.norm()}")
-    # print(f"deltaC_thrust.norm() {C2.norm()}")
-    print(f"||C1 - C3|| {C1_dup.norm()}")
+    # # print(C1)
+    # # print(C3)
+    # # print(f"deltaC.norm() {C1.norm()}")
+    # # print(f"deltaC_thrust.norm() {C2.norm()}")
+    # print(f"||C1 - C3|| {C1_dup.norm()}")
 
-    fci_comp_gpu.to_gpu()
+    # fci_comp_gpu.to_gpu()
 
 
 fci_gpu_timer = fci_comp_gpu.get_acc_timer()

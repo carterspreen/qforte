@@ -260,7 +260,7 @@ __global__ void lm_apply_array12_same_spin_opt_kernel(
     int norbs,
     int inc1,
     int inc2,
-    cuDoubleComplex* __restrict__ temp_global);
+    cuDoubleComplex* __restrict__ temp_global); // size states1*states1
 
 extern "C" void lm_apply_array12_same_spin_opt_wrapper(
     cuDoubleComplex* d_out,
@@ -274,7 +274,7 @@ extern "C" void lm_apply_array12_same_spin_opt_wrapper(
     int norbs,
     int inc1,
     int inc2,
-    cuDoubleComplex* __restrict__ temp_global);
+    cuDoubleComplex* __restrict__ temp_global); // size states1*states1
 
 // ==============================================
 // LM Apply Array12 Diff Spin kernels and wrappers
