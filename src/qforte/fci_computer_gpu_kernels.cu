@@ -941,7 +941,6 @@ extern "C" void lm_apply_array12_same_spin_opt_wrapper(
         d_out, d_C, d_dexc, d_h1e, d_h2e,
         states1, states2, ndexc, norbs, inc1, inc2, temp_global);
 
-
     cudaError_t err = cudaGetLastError();
     if (err != cudaSuccess) {
         std::cerr << "Failed to launch lm_apply_array12_same_spin_opt_kernel ("
@@ -1086,6 +1085,11 @@ extern "C" void lm_apply_array12_diff_spin_wrapper(
     cudaMalloc(&d_boff,  nadexc_tot * sizeof(int));
     cudaMalloc(&d_nsig,  sizeof(int));
 
+    // Pre-allocate d_ctemp with maximum possible size (nadexc_tot * beta_states)
+    // This avoids repeated malloc/free in the loop
+    cuDoubleComplex* d_ctemp;
+    cudaMalloc(&d_ctemp, nadexc_tot * beta_states * sizeof(cuDoubleComplex));
+
     int threadsPerBlock = 256;
 
     for (int orbid = 0; orbid < norbs2; ++orbid) {
@@ -1096,7 +1100,6 @@ extern "C" void lm_apply_array12_diff_spin_wrapper(
         lm_diff_spin_compute_nsig_kernel<<<blocks, threadsPerBlock>>>(
             d_adexc, d_signs, d_coff, d_boff, d_nsig,
             alpha_states, nadexc, orbid);
-        cudaDeviceSynchronize();
 
         int nsig;
         cudaMemcpy(&nsig, d_nsig, sizeof(int), cudaMemcpyDeviceToHost);
@@ -1107,27 +1110,23 @@ extern "C" void lm_apply_array12_diff_spin_wrapper(
             break;
         }
 
-        // Allocate d_ctemp based on actual nsig (not nadexc_tot)
-        cuDoubleComplex* d_ctemp;
-        cudaMalloc(&d_ctemp, nsig * beta_states * sizeof(cuDoubleComplex));
+        // Zero only the portion we need
         cudaMemset(d_ctemp, 0, nsig * beta_states * sizeof(cuDoubleComplex));
 
         // 2) build ctemp
         blocks = (nsig + threadsPerBlock - 1) / threadsPerBlock;
         lm_diff_spin_ctemp_kernel<<<blocks, threadsPerBlock>>>(
             d_ctemp, d_C, d_signs, d_coff, beta_states, nsig);
-        cudaDeviceSynchronize();
 
         // 3) beta loop + accumulate
         blocks = (beta_states + threadsPerBlock - 1) / threadsPerBlock;
         lm_diff_spin_vtemp_kernel<<<blocks, threadsPerBlock>>>(
             d_out, d_ctemp, d_bdexc, d_h2e, d_boff,
             alpha_states, beta_states, nbdexc, norbs, nsig, orbid);
-        cudaDeviceSynchronize();
-
-        // Free d_ctemp for this iteration
-        cudaFree(d_ctemp);
     }
+
+    // Free d_ctemp once at the end
+    cudaFree(d_ctemp);
 
     cudaFree(d_signs);
     cudaFree(d_coff);
@@ -1139,5 +1138,233 @@ extern "C" void lm_apply_array12_diff_spin_wrapper(
         std::cerr << "lm_apply_array12_diff_spin_wrapper failed ("
                   << cudaGetErrorString(err) << ")\n";
         throw std::runtime_error("lm_apply_array12_diff_spin_wrapper execution failed");
+    }
+}
+
+// ==============================================
+// LM Apply Array12 Same Spin split & tiled
+// ==============================================
+
+__global__ void lm_same_spin_build_temp_tiled_kernel(
+    cuDoubleComplex* __restrict__ d_temp,   // [states1 * states1]
+    const int* __restrict__ d_dexc,         // [states1 * ndexc * 3]
+    const cuDoubleComplex* __restrict__ d_h1e,
+    const cuDoubleComplex* __restrict__ d_h2e,
+    int states1,
+    int ndexc,
+    int norbs)
+{
+    int s1 = blockIdx.x;  // one block per s1
+    if (s1 >= states1) return;
+
+    int tid = threadIdx.x;
+    int blockSize = blockDim.x;
+
+    extern __shared__ cuDoubleComplex sh_temp[];  // size = blockDim.x
+
+    const int norbs2 = norbs * norbs;
+
+    // pointer to dexc for this s1
+    const int* cdexc_s1 = d_dexc + 3 * s1 * ndexc;
+
+    // loop over temp tiles [tileStart, tileStart + tileLen)
+    for (int tileStart = 0; tileStart < states1; tileStart += blockSize) {
+
+        int tileLen = min(blockSize, states1 - tileStart);
+
+        // 1) zero out the shared tile
+        if (tid < tileLen) {
+            sh_temp[tid] = make_cuDoubleComplex(0.0, 0.0);
+        }
+        __syncthreads();
+
+        // 2) walk excitations and add contributions for targets in this tile
+        //    each thread handles a subset of i in 0..ndexc-1
+        for (int i = tid; i < ndexc; i += blockSize) {
+
+            const int* cd1 = cdexc_s1 + 3 * i;
+            int s2      = cd1[0];
+            int ijshift = cd1[1];
+            int parity1 = cd1[2];
+
+            // h1e contribution: temp[s2] += parity1 * h1e[ijshift]
+            if (s2 >= tileStart && s2 < tileStart + tileLen) {
+                int local = s2 - tileStart;
+                cuDoubleComplex contrib = cuCmul(
+                    make_cuDoubleComplex((double)parity1, 0.0),
+                    d_h1e[ijshift]
+                );
+                atomicAdd(&(sh_temp[local].x), contrib.x);
+                atomicAdd(&(sh_temp[local].y), contrib.y);
+            }
+
+            // h2e contributions: loop over cdexc2 for this s2
+            const int* cdexc2 = d_dexc + 3 * s2 * ndexc;
+            const cuDoubleComplex* h2etmp = d_h2e + ijshift * norbs2;
+
+            for (int j = 0; j < ndexc; ++j) {
+                const int* cd2 = cdexc2 + 3 * j;
+                int target  = cd2[0];
+                int klshift = cd2[1];
+                int parity2 = cd2[2];
+
+                if (target >= tileStart && target < tileStart + tileLen) {
+                    int local = target - tileStart;
+
+                    int parity = parity1 * parity2;
+                    cuDoubleComplex val = h2etmp[klshift];
+                    if (parity == -1) {
+                        val.x = -val.x;
+                        val.y = -val.y;
+                    }
+
+                    atomicAdd(&(sh_temp[local].x), val.x);
+                    atomicAdd(&(sh_temp[local].y), val.y);
+                }
+            }
+        }
+
+        __syncthreads();
+
+        // 3) flush this tile to global memory (no atomics needed)
+        //    Each (s1, target) is only ever written by this block
+        for (int local = tid; local < tileLen; local += blockSize) {
+            int globalTarget = tileStart + local;
+            int gidx = s1 * states1 + globalTarget;
+
+            cuDoubleComplex val = sh_temp[local];
+
+            // If d_temp was cudaMemset to 0 before the kernel,
+            // you can just assign:
+            // d_temp[gidx] = val;
+            // To be safe for reuse, you can also do +=:
+            cuDoubleComplex old = d_temp[gidx];
+            old.x += val.x;
+            old.y += val.y;
+            d_temp[gidx] = old;
+        }
+
+        __syncthreads(); // ensure tile is done before reusing sh_temp
+    }
+}
+
+extern "C" void lm_same_spin_build_temp_tiled_wrapper(
+    cuDoubleComplex* d_temp,
+    const int* d_dexc,
+    const cuDoubleComplex* d_h1e,
+    const cuDoubleComplex* d_h2e,
+    int states1,
+    int ndexc,
+    int norbs)
+{
+    if (states1 == 0) return;
+
+    // zero temp once; kernel adds tile-wise
+    cudaError_t err = cudaMemset(d_temp, 0, states1 * states1 * sizeof(cuDoubleComplex));
+    if (err != cudaSuccess) {
+        std::cerr << "cudaMemset(d_temp) failed: " << cudaGetErrorString(err) << "\n";
+        throw std::runtime_error("cudaMemset(d_temp) failed");
+    }
+
+    int blockSize = 256;                // tunable; also tile size
+    int gridSize  = states1;            // one block per s1
+    size_t shmem  = blockSize * sizeof(cuDoubleComplex);
+
+    lm_same_spin_build_temp_tiled_kernel<<<gridSize, blockSize, shmem>>>(
+        d_temp, d_dexc, d_h1e, d_h2e,
+        states1, ndexc, norbs);
+
+    err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        std::cerr << "lm_same_spin_build_temp_tiled_kernel launch failed ("
+                  << cudaGetErrorString(err) << ")\n";
+        throw std::runtime_error("lm_same_spin_build_temp_tiled_kernel launch failed");
+    }
+}
+
+__global__ void lm_same_spin_gemv_tiled_kernel(
+    cuDoubleComplex* __restrict__ d_out,
+    const cuDoubleComplex* __restrict__ d_C,
+    const cuDoubleComplex* __restrict__ d_temp,
+    int states1,
+    int states2,
+    int inc1,
+    int inc2)
+{
+    int s1 = blockIdx.x;   // one block per s1
+    if (s1 >= states1) return;
+
+    int tid = threadIdx.x;
+    int blockSize = blockDim.x;
+
+    extern __shared__ cuDoubleComplex sh_temp[];  // tile buffer
+
+    // Each block handles all j for this s1; j is split across threads
+    for (int iiBase = 0; iiBase < states1; iiBase += blockSize) {
+
+        int tileCount = min(blockSize, states1 - iiBase);
+
+        // load this tile of temp into shared memory
+        if (tid < tileCount) {
+            sh_temp[tid] = d_temp[s1 * states1 + (iiBase + tid)];
+        }
+        __syncthreads();
+
+        // each thread handles j = tid, tid+blockSize, ...
+        for (int j = tid; j < states2; j += blockSize) {
+
+            // accumulate over this tile
+            cuDoubleComplex partial = make_cuDoubleComplex(0.0, 0.0);
+
+            for (int local = 0; local < tileCount; ++local) {
+                int ii = iiBase + local;
+
+                cuDoubleComplex tval = sh_temp[local];
+
+                // C(ii, j) with generic strides inc1/inc2
+                int cidx = ii * inc1 + j * inc2;
+                cuDoubleComplex cval = d_C[cidx];
+
+                cuDoubleComplex prod = cuCmul(tval, cval);
+                partial.x += prod.x;
+                partial.y += prod.y;
+            }
+
+            // accumulate into out(s1, j)
+            int out_idx = s1 * inc1 + j * inc2;
+            cuDoubleComplex prev = d_out[out_idx];
+            prev.x += partial.x;
+            prev.y += partial.y;
+            d_out[out_idx] = prev;
+        }
+
+        __syncthreads();
+    }
+}
+
+extern "C" void lm_apply_array12_same_spin_opt_gemv_tiled_wrapper(
+    cuDoubleComplex* d_out,
+    const cuDoubleComplex* d_C,
+    const cuDoubleComplex* d_temp,
+    int states1,
+    int states2,
+    int inc1,
+    int inc2)
+{
+    if (states1 == 0 || states2 == 0) return;
+
+    int blockSize = 256;                     // tune
+    int gridSize  = states1;                 // one block per s1
+    size_t shmem  = blockSize * sizeof(cuDoubleComplex);
+
+    lm_same_spin_gemv_tiled_kernel<<<gridSize, blockSize, shmem>>>(
+        d_out, d_C, d_temp,
+        states1, states2, inc1, inc2);
+
+    cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        std::cerr << "lm_same_spin_gemv_tiled_kernel launch failed ("
+                  << cudaGetErrorString(err) << ")\n";
+        throw std::runtime_error("lm_same_spin_gemv_tiled_kernel launch failed");
     }
 }

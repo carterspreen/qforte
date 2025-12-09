@@ -23,6 +23,7 @@
 #include "fci_computer_gpu.h"
 #include "fci_graph_gpu.h"
 
+#include "cublas_math.cuh"
 #include "fci_computer_gpu_kernels.cuh"
 
 FCIComputerGPU::FCIComputerGPU(int nel, int sz, int norb, bool on_gpu, const std::string& data_type) : 
@@ -95,6 +96,9 @@ FCIComputerGPU::FCIComputerGPU(int nel, int sz, int norb, bool on_gpu, const std
 
     graph_ = FCIGraphGPU(nalfa_el_, nbeta_el_, norb_);
 
+    // start cublas math
+    math_gpu_init();
+
     // timer_ = local_timer();
 }
 
@@ -149,6 +153,8 @@ FCIComputerGPU::~FCIComputerGPU() {
         
         parityb_undag_gpu_real_.clear();
         parityb_undag_gpu_real_.shrink_to_fit();
+
+        math_gpu_finalize();
 
     } catch (const std::exception& e) {
         // std::cerr << "Caught exception in FCIComputerGPU destructor: " << e.what() << std::endl;
@@ -266,7 +272,7 @@ void FCIComputerGPU::apply_tensor_spat_12bdy_gpu(
     TensorGPU Cnew({nalfa_strs_, nbeta_strs_}, "Cnew", true);
     Cnew.zero_gpu();
 
-    timer_.acc_begin("=> same spin outer");
+    timer_.acc_begin("=> same spin alpha outer");
     lm_apply_array12_same_spin_opt_gpu(
         Cnew, 
         graph_.read_dexca_vec(), // dexca_tmp
@@ -277,7 +283,7 @@ void FCIComputerGPU::apply_tensor_spat_12bdy_gpu(
         h2e,
         norb_,
         true);
-    timer_.acc_end("=> same spin outer");
+    timer_.acc_end("=> same spin alpha outer");
 
     /// TODO: ask nick: why was this transpose here?
 
@@ -285,7 +291,7 @@ void FCIComputerGPU::apply_tensor_spat_12bdy_gpu(
     // Cnew.transpose_gpu();
     // timer_.acc_end("=> transpose");
 
-    timer_.acc_begin("=> same spin outer");    
+    timer_.acc_begin("=> same spin beta outer");    
     lm_apply_array12_same_spin_opt_gpu(
         Cnew, 
         graph_.read_dexcb_vec(),
@@ -296,7 +302,7 @@ void FCIComputerGPU::apply_tensor_spat_12bdy_gpu(
         h2e,
         norb_,
         false);
-    timer_.acc_end("=> same spin outer");
+    timer_.acc_end("=> same spin beta outer");
 
     // timer_.acc_begin("=> transpose");
     // Cnew.transpose_gpu();
@@ -464,21 +470,26 @@ void FCIComputerGPU::lm_apply_array12_same_spin_opt_gpu(
 
     timer_.acc_end("==> same spin data transfer");
 
-    timer_.acc_begin("==> same spin kernel");
-    // Call GPU kernel wrapper
-    lm_apply_array12_same_spin_opt_wrapper(
-        d_out,
-        d_C,
+    timer_.acc_begin("==> same spin prep kernel");
+    lm_same_spin_build_temp_tiled_wrapper(
+        d_temp_ptr,
         d_dexc_ptr,
         d_h1e,
         d_h2e,
         states1,
-        states2,
         ndexc,
-        norbs,
+        norbs);
+    timer_.acc_end("==> same spin prep kernel");
+
+    timer_.acc_begin("==> same spin kernel");
+    lm_apply_array12_same_spin_opt_gemv_tiled_wrapper(
+        d_out,
+        d_C,
+        d_temp_ptr,
+        states1,
+        states2,
         inc1,
-        inc2,
-        d_temp_ptr);
+        inc2);
     timer_.acc_end("==> same spin kernel");
 }
 

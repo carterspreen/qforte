@@ -308,3 +308,44 @@ extern "C" void lm_apply_array12_diff_spin_wrapper(
     int nadexc,
     int nbdexc,
     int norbs);
+
+// ==============================================
+// LM Apply Array12 Same Spin split & tiled
+// ==============================================
+
+__global__ void lm_same_spin_build_temp_tiled_kernel(
+    cuDoubleComplex* __restrict__ d_temp,   // [states1 * states1]
+    const int* __restrict__ d_dexc,         // [states1 * ndexc * 3]
+    const cuDoubleComplex* __restrict__ d_h1e,
+    const cuDoubleComplex* __restrict__ d_h2e,
+    int states1,
+    int ndexc,
+    int norbs);
+
+extern "C" void lm_same_spin_build_temp_tiled_wrapper(
+    cuDoubleComplex* d_temp,
+    const int* d_dexc,
+    const cuDoubleComplex* d_h1e,
+    const cuDoubleComplex* d_h2e,
+    int states1,
+    int ndexc,
+    int norbs);
+
+__global__ void lm_same_spin_gemv_tiled_kernel(
+    cuDoubleComplex* __restrict__ d_out,
+    const cuDoubleComplex* __restrict__ d_C,
+    const cuDoubleComplex* __restrict__ d_temp,
+    int states1,
+    int states2,
+    int inc1,
+    int inc2);
+
+
+extern "C" void lm_apply_array12_same_spin_opt_gemv_tiled_wrapper(
+    cuDoubleComplex* d_out,
+    const cuDoubleComplex* d_C,
+    const cuDoubleComplex* d_temp,
+    int states1,
+    int states2,
+    int inc1,
+    int inc2);

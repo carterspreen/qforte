@@ -602,6 +602,8 @@ void FCIComputer::lm_apply_array12_same_spin_opt(
     std::vector<std::complex<double>> temp(states1, 0.0);
 
     for (int s1 = 0; s1 < states1; ++s1) {
+        timer_.acc_begin("==> prepare temp");
+
         std::fill(temp.begin(), temp.end(), 0.0);
         const int *cdexc = dexc.data() + 3 * s1 * ndexc;
         const int *lim1 = cdexc + 3 * ndexc;
@@ -626,11 +628,15 @@ void FCIComputer::lm_apply_array12_same_spin_opt(
             }
         }
         const std::complex<double> *xptr = C_.data().data();
+        timer_.acc_end("==> prepare temp");
+
+        timer_.acc_begin("==> zaxpy loop");
         for (int ii = 0; ii < states1; ii++) { 
             const std::complex<double> ttt = temp[ii];
             math_zaxpy(states2, ttt, xptr, inc2, cout, inc2);
             xptr += inc1;
         }
+        timer_.acc_end("==> zaxpy loop");
     }
 }
 
