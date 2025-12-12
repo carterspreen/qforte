@@ -285,12 +285,6 @@ void FCIComputerGPU::apply_tensor_spat_12bdy_gpu(
         true);
     timer_.acc_end("=> same spin alpha outer");
 
-    /// TODO: ask nick: why was this transpose here?
-
-    // timer_.acc_begin("=> transpose");
-    // Cnew.transpose_gpu();
-    // timer_.acc_end("=> transpose");
-
     timer_.acc_begin("=> same spin beta outer");    
     lm_apply_array12_same_spin_opt_gpu(
         Cnew, 
@@ -303,10 +297,6 @@ void FCIComputerGPU::apply_tensor_spat_12bdy_gpu(
         norb_,
         false);
     timer_.acc_end("=> same spin beta outer");
-
-    // timer_.acc_begin("=> transpose");
-    // Cnew.transpose_gpu();
-    // timer_.acc_end("=> transpose");
 
     timer_.acc_begin("=> diff spin outer");
     lm_apply_array12_diff_spin_opt_gpu(
@@ -445,9 +435,9 @@ void FCIComputerGPU::lm_apply_array12_same_spin_opt_gpu(
     const int norbs,
     const bool is_alpha)
 {
-    gpu_error();
-
     timer_.acc_begin("==> same spin data transfer");
+
+    gpu_error();
 
     const int states1 = is_alpha ? alpha_states : beta_states;
     const int states2 = is_alpha ? beta_states : alpha_states;
@@ -479,6 +469,9 @@ void FCIComputerGPU::lm_apply_array12_same_spin_opt_gpu(
         states1,
         ndexc,
         norbs);
+
+    // for proper timing (DEBUG)
+    // cudaDeviceSynchronize();`
     timer_.acc_end("==> same spin prep kernel");
 
     timer_.acc_begin("==> same spin kernel");
@@ -490,6 +483,9 @@ void FCIComputerGPU::lm_apply_array12_same_spin_opt_gpu(
         states2,
         inc1,
         inc2);
+    
+    // for proper timing (DEBUG)
+    // cudaDeviceSynchronize();
     timer_.acc_end("==> same spin kernel");
 }
 

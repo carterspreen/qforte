@@ -974,38 +974,45 @@ __global__ void lm_diff_spin_compute_nsig_kernel(
     int s1 = blockIdx.x * blockDim.x + threadIdx.x;
     if (s1 >= alpha_states) return;
 
+    // Each thread scans nadexc excitations for this alpha state
     for (int i = 0; i < nadexc; ++i) {
         int idx   = 3 * (s1 * nadexc + i);
         int orbij = d_adexc[idx + 1];
         if (orbij == orbid) {
             int pos = atomicAdd(d_nsig, 1);
             d_signs[pos] = d_adexc[idx + 2]; // ±1
-            d_coff[pos]  = d_adexc[idx];     // α_to
-            d_boff[pos]  = s1;               // α_from
+            d_coff[pos]  = d_adexc[idx];     // row in C (alpha_to)
+            d_boff[pos]  = s1;               // alpha_from
         }
     }
 }
 
-// 2) build ctemp(β, isig) = sign_α * C(α_to, β)
+// d_ctemp is column-major: ctemp[beta][isig] with leading dimension nsig_max.
+// We pass nsig_current via d_nsig.
 __global__ void lm_diff_spin_ctemp_kernel(
     cuDoubleComplex* __restrict__ d_ctemp,
     const cuDoubleComplex* __restrict__ d_C,
     const int* __restrict__ d_signs,
     const int* __restrict__ d_coff,
+    const int* __restrict__ d_nsig,
     int beta_states,
-    int nsig)
+    int nsig_max)
 {
-    int isig = blockIdx.x * blockDim.x + threadIdx.x;
-    if (isig >= nsig) return;
+    int isig = blockIdx.y * blockDim.y + threadIdx.y;
+    int beta = blockIdx.x * blockDim.x + threadIdx.x;
+
+    int nsig = *d_nsig;           // current nsig for this orbid
+
+    if (isig >= nsig || beta >= beta_states) return;
 
     int alpha_to = d_coff[isig];
-    const cuDoubleComplex* cptr = d_C + alpha_to * beta_states;
-    cuDoubleComplex zsign = make_cuDoubleComplex(double(d_signs[isig]), 0.0);
+    const cuDoubleComplex* c_row = d_C + alpha_to * beta_states;
 
-    for (int beta = 0; beta < beta_states; ++beta) {
-        cuDoubleComplex contrib = cuCmul(zsign, cptr[beta]);
-        d_ctemp[beta * nsig + isig] = contrib;  // no += needed if d_ctemp was memset to 0
-    }
+    cuDoubleComplex zsign = make_cuDoubleComplex(double(d_signs[isig]), 0.0);
+    cuDoubleComplex contrib = cuCmul(zsign, c_row[beta]);
+
+    // column-major: ctemp[beta][isig] = contrib
+    d_ctemp[beta * nsig_max + isig] = contrib;
 }
 
 // 3) beta-loop + GEMV + scatter
@@ -1015,28 +1022,31 @@ __global__ void lm_diff_spin_vtemp_kernel(
     const int* __restrict__ d_bdexc,
     const cuDoubleComplex* __restrict__ d_h2e,
     const int* __restrict__ d_boff,
+    const int* __restrict__ d_nsig,
     int alpha_states,
     int beta_states,
     int nbdexc,
     int norbs,
-    int nsig,
+    int nsig_max,
     int orbid)
 {
     int s2 = blockIdx.x * blockDim.x + threadIdx.x;
     if (s2 >= beta_states) return;
 
+    int nsig = *d_nsig;
+    if (nsig == 0) return;
+
     const int norbs2 = norbs * norbs;
     const cuDoubleComplex* tmperi = d_h2e + orbid * norbs2;
 
-    cuDoubleComplex* tmpout = d_out + s2;
+    cuDoubleComplex* tmpout = d_out + s2; // column s2
 
+    // Loop over beta excitations bdexc[s2][j]
     for (int j = 0; j < nbdexc; ++j) {
         int base   = 3 * (s2 * nbdexc + j);
-        int idx2   = d_bdexc[base + 0]; // beta_to
-        int orbkl  = d_bdexc[base + 1]; // (k,l)
-        int parity = d_bdexc[base + 2]; // sign_β
-
-        if (idx2 < 0 || idx2 >= beta_states) continue; // TEMP GUARD for debugging
+        int idx2   = d_bdexc[base + 0]; // column index in ctemp
+        int orbkl  = d_bdexc[base + 1]; // index in tmperi
+        int parity = d_bdexc[base + 2]; // ±1
 
         cuDoubleComplex ttt = tmperi[orbkl];
         if (parity == -1) {
@@ -1044,21 +1054,18 @@ __global__ void lm_diff_spin_vtemp_kernel(
             ttt.y = -ttt.y;
         }
 
-        const cuDoubleComplex* cctmp = d_ctemp + idx2 * nsig;
+        const cuDoubleComplex* cctmp = d_ctemp + idx2 * nsig_max;
 
+        // Accumulate contributions for all isig into out[boff[isig], s2]
         for (int isig = 0; isig < nsig; ++isig) {
             cuDoubleComplex contrib = cuCmul(ttt, cctmp[isig]);
-
             int alpha_from = d_boff[isig];
-            if (alpha_from < 0 || alpha_from >= alpha_states) continue; // TEMP GUARD
-
             int out_idx = beta_states * alpha_from;
             tmpout[out_idx].x += contrib.x;
             tmpout[out_idx].y += contrib.y;
         }
     }
 }
-
 
 extern "C" void lm_apply_array12_diff_spin_wrapper(
     cuDoubleComplex* d_out,
@@ -1074,64 +1081,57 @@ extern "C" void lm_apply_array12_diff_spin_wrapper(
 {
     const int norbs2     = norbs * norbs;
     const int nadexc_tot = alpha_states * nadexc;
+    const int max_nsig   = nadexc_tot; // safe upper bound
 
     int* d_signs;
     int* d_coff;
     int* d_boff;
     int* d_nsig;
+    cuDoubleComplex* d_ctemp;
 
     cudaMalloc(&d_signs, nadexc_tot * sizeof(int));
     cudaMalloc(&d_coff,  nadexc_tot * sizeof(int));
     cudaMalloc(&d_boff,  nadexc_tot * sizeof(int));
     cudaMalloc(&d_nsig,  sizeof(int));
 
-    // Pre-allocate d_ctemp with maximum possible size (nadexc_tot * beta_states)
-    // This avoids repeated malloc/free in the loop
-    cuDoubleComplex* d_ctemp;
-    cudaMalloc(&d_ctemp, nadexc_tot * beta_states * sizeof(cuDoubleComplex));
+    cudaMalloc(&d_ctemp, max_nsig * beta_states * sizeof(cuDoubleComplex));
 
     int threadsPerBlock = 256;
 
     for (int orbid = 0; orbid < norbs2; ++orbid) {
-        cudaMemset(d_nsig,  0, sizeof(int));
+        cudaMemset(d_nsig, 0, sizeof(int));
 
-        // 1) compute nsig
-        int blocks = (alpha_states + threadsPerBlock - 1) / threadsPerBlock;
-        lm_diff_spin_compute_nsig_kernel<<<blocks, threadsPerBlock>>>(
+        // 1) compute nsig + lists
+        int blocks_alpha = (alpha_states + threadsPerBlock - 1) / threadsPerBlock;
+        lm_diff_spin_compute_nsig_kernel<<<blocks_alpha, threadsPerBlock>>>(
             d_adexc, d_signs, d_coff, d_boff, d_nsig,
             alpha_states, nadexc, orbid);
 
-        int nsig;
-        cudaMemcpy(&nsig, d_nsig, sizeof(int), cudaMemcpyDeviceToHost);
-        if (nsig == 0) continue;
+        // no need to sync here; next kernels see updated d_nsig
 
-        if (nsig > nadexc_tot) {
-            std::cerr << "ERROR: nsig > nadexc_tot, something is wrong with adexc\n";
-            break;
-        }
+        // 2) build ctemp with 2D grid
+        dim3 block2d(16, 16);
+        dim3 grid2d(
+            (beta_states + block2d.x - 1) / block2d.x,
+            (max_nsig    + block2d.y - 1) / block2d.y);
+        lm_diff_spin_ctemp_kernel<<<grid2d, block2d>>>(
+            d_ctemp, d_C, d_signs, d_coff, d_nsig,
+            beta_states, max_nsig);
 
-        // Zero only the portion we need
-        cudaMemset(d_ctemp, 0, nsig * beta_states * sizeof(cuDoubleComplex));
-
-        // 2) build ctemp
-        blocks = (nsig + threadsPerBlock - 1) / threadsPerBlock;
-        lm_diff_spin_ctemp_kernel<<<blocks, threadsPerBlock>>>(
-            d_ctemp, d_C, d_signs, d_coff, beta_states, nsig);
-
-        // 3) beta loop + accumulate
-        blocks = (beta_states + threadsPerBlock - 1) / threadsPerBlock;
-        lm_diff_spin_vtemp_kernel<<<blocks, threadsPerBlock>>>(
-            d_out, d_ctemp, d_bdexc, d_h2e, d_boff,
-            alpha_states, beta_states, nbdexc, norbs, nsig, orbid);
+        // 3) beta loop + accumulate into d_out
+        int blocks_beta = (beta_states + threadsPerBlock - 1) / threadsPerBlock;
+        lm_diff_spin_vtemp_kernel<<<blocks_beta, threadsPerBlock>>>(
+            d_out, d_ctemp, d_bdexc, d_h2e, d_boff, d_nsig,
+            alpha_states, beta_states, nbdexc, norbs, max_nsig, orbid);
     }
 
-    // Free d_ctemp once at the end
-    cudaFree(d_ctemp);
+    cudaDeviceSynchronize();
 
     cudaFree(d_signs);
     cudaFree(d_coff);
     cudaFree(d_boff);
     cudaFree(d_nsig);
+    cudaFree(d_ctemp);
 
     cudaError_t err = cudaGetLastError();
     if (err != cudaSuccess) {
@@ -1283,23 +1283,24 @@ extern "C" void lm_same_spin_build_temp_tiled_wrapper(
 }
 
 __global__ void lm_same_spin_gemv_tiled_kernel(
-    cuDoubleComplex* __restrict__ d_out,
-    const cuDoubleComplex* __restrict__ d_C,
-    const cuDoubleComplex* __restrict__ d_temp,
+    cuDoubleComplex* __restrict__ d_out,        // [states1 x states2]
+    const cuDoubleComplex* __restrict__ d_C,    // [states1 x states2]
+    const cuDoubleComplex* __restrict__ d_temp, // [states1 x states1]
     int states1,
     int states2,
     int inc1,
     int inc2)
 {
-    int s1 = blockIdx.x;   // one block per s1
+    int s1 = blockIdx.x;   // one block per s1 (row of target -> Cout)
     if (s1 >= states1) return;
 
     int tid = threadIdx.x;
     int blockSize = blockDim.x;
 
-    extern __shared__ cuDoubleComplex sh_temp[];  // tile buffer
+    extern __shared__ cuDoubleComplex sh_temp[];  // tile buffer (size = blockDim.x)
 
-    // Each block handles all j for this s1; j is split across threads
+    // Solving for: out(s1, j) += sum_{ii=0}^{states1-1} temp(s1, ii) * C(ii, j)
+    // Tile over ii dimension in chunks of size blockSize
     for (int iiBase = 0; iiBase < states1; iiBase += blockSize) {
 
         int tileCount = min(blockSize, states1 - iiBase);
@@ -1310,18 +1311,17 @@ __global__ void lm_same_spin_gemv_tiled_kernel(
         }
         __syncthreads();
 
-        // each thread handles j = tid, tid+blockSize, ...
+        // each thread handles j = tid, tid+blockSize, ... (subset of columns)
         for (int j = tid; j < states2; j += blockSize) {
 
-            // accumulate over this tile
             cuDoubleComplex partial = make_cuDoubleComplex(0.0, 0.0);
 
+            // accumulate the dot product part of shared temp * C[ii_base : ii_base + tileCount, j]
             for (int local = 0; local < tileCount; ++local) {
                 int ii = iiBase + local;
 
                 cuDoubleComplex tval = sh_temp[local];
-
-                // C(ii, j) with generic strides inc1/inc2
+                
                 int cidx = ii * inc1 + j * inc2;
                 cuDoubleComplex cval = d_C[cidx];
 
