@@ -415,3 +415,19 @@ extern "C" void lm_apply_array12_same_spin_spmm_csr_coalesced_wrapper(
     int norbs,
     int inc1,
     int inc2);
+
+// ===============================================
+// even newer Diff Spin Implementation
+// ===============================================
+
+extern "C" void lm_apply_array12_diff_spin_wrapper_v3(
+    cuDoubleComplex* d_out,
+    const cuDoubleComplex* d_C,
+    const int* d_adexc,
+    const int* d_bdexc,
+    const cuDoubleComplex* d_h2e,
+    int alpha_states,
+    int beta_states,
+    int nadexc,
+    int nbdexc,
+    int norbs);

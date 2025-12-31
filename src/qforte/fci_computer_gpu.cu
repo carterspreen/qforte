@@ -573,7 +573,7 @@ void FCIComputerGPU::lm_apply_array12_diff_spin_opt_gpu_v2(
     const cuDoubleComplex* d_C = thrust::raw_pointer_cast(C_.d_data().data());
     const cuDoubleComplex* d_h2e = thrust::raw_pointer_cast(h2e.d_data().data());
 
-    lm_apply_array12_diff_spin_wrapper_v2(
+    lm_apply_array12_diff_spin_wrapper_v3(
         d_out,
         d_C,
         thrust::raw_pointer_cast(d_adexc.data()),
@@ -584,6 +584,19 @@ void FCIComputerGPU::lm_apply_array12_diff_spin_opt_gpu_v2(
         nadexc,
         nbdexc,
         norbs);
+
+
+    // lm_apply_array12_diff_spin_wrapper_v2(
+    //     d_out,
+    //     d_C,
+    //     thrust::raw_pointer_cast(d_adexc.data()),
+    //     thrust::raw_pointer_cast(d_bdexc.data()),
+    //     d_h2e,
+    //     alpha_states,
+    //     beta_states,
+    //     nadexc,
+    //     nbdexc,
+    //     norbs);
 }
 
 // ==============================
