@@ -156,6 +156,7 @@ if(ENABLE_CUDA)
   target_link_libraries(qforte_core PRIVATE
     CUDA::cudart
     CUDA::cublas
+    CUDA::cusparse
     fmt-header-only
     ${OPENBLAS_EXE}
   )

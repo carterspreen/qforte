@@ -10,6 +10,47 @@
 #include <thrust/fill.h>
 #include <thrust/copy.h>
 
+#include <cusparse.h>
+#include <thrust/device_vector.h>
+#include <thrust/sort.h>
+#include <thrust/reduce.h>
+#include <thrust/scan.h>
+#include <limits>
+#include <stdexcept>
+
+// ==============================================
+// Error checking macros
+// =============================================
+
+#define CHECK_CUDA(call) do {                                  \
+  cudaError_t err_ = (call);                                   \
+  if (err_ != cudaSuccess) {                                   \
+    std::cerr << "CUDA error " << __FILE__ << ":" << __LINE__  \
+              << " : " << cudaGetErrorString(err_) << "\n";    \
+    throw std::runtime_error("CUDA failure");                  \
+  }                                                            \
+} while(0)
+
+#define CHECK_CUSPARSE(call) do {                              \
+  cusparseStatus_t st_ = (call);                               \
+  if (st_ != CUSPARSE_STATUS_SUCCESS) {                        \
+    std::cerr << "cuSPARSE error " << __FILE__ << ":"          \
+              << __LINE__ << " : " << (int)st_ << "\n";        \
+    throw std::runtime_error("cuSPARSE failure");              \
+  }                                                            \
+} while(0)
+
+// ==============================================
+// Functor for cuDoubleComplex addition - used with thrust
+// ==============================================
+
+struct cuCadd_op {
+  __host__ __device__
+  cuDoubleComplex operator()(const cuDoubleComplex& a,
+                             const cuDoubleComplex& b) const {
+    return make_cuDoubleComplex(a.x + b.x, a.y + b.y);
+  }
+};
 
 // ==============================================
 // Original Implementation:
@@ -1771,4 +1812,534 @@ extern "C" void lm_apply_array12_diff_spin_wrapper_v2(
                   << cudaGetErrorString(err) << ")\n";
         throw std::runtime_error("lm_apply_array12_diff_spin_wrapper execution failed");
     }
+}
+
+// ==============================================
+// New Same Spin kernel implementation 
+// ==============================================
+
+__global__ void build_same_spin_csr_cols_vals_kernel(
+    int* __restrict__ d_col_ind,                 // [nnz_total]
+    cuDoubleComplex* __restrict__ d_vals,         // [nnz_total]
+    const int* __restrict__ d_dexc,               // [states1 * ndexc * 3]
+    const cuDoubleComplex* __restrict__ d_h1e,    // [norbs2]
+    const cuDoubleComplex* __restrict__ d_h2e,    // [norbs2 * norbs2]
+    int states1,
+    int ndexc,
+    int norbs)
+{
+    const int norbs2 = norbs * norbs;
+
+    // nnz per row = ndexc (h1) + ndexc*ndexc (h2)
+    const int nnz_per_row = ndexc * (ndexc + 1);
+    const long long nnz_total = (long long)states1 * (long long)nnz_per_row;
+
+    long long p = (long long)blockIdx.x * blockDim.x + threadIdx.x;
+    if (p >= nnz_total) return;
+
+    // Decode row/position inside row
+    int s1 = (int)(p / nnz_per_row);
+    int t  = (int)(p - (long long)s1 * nnz_per_row);
+
+    // Base pointer for row s1 in d_dexc
+    // (each excitation is 3 ints: [s2, ijshift, parity1])
+    const int base_s1 = 3 * (s1 * ndexc);
+
+    if (t < ndexc) {
+        // -----------------------
+        // h1e contribution entry:
+        // A(s1, s2) += parity1 * h1e[ijshift]
+        // -----------------------
+        const int i = t;
+
+        const int s2      = d_dexc[base_s1 + 3*i + 0];
+        const int ijshift = d_dexc[base_s1 + 3*i + 1];
+        const int parity1 = d_dexc[base_s1 + 3*i + 2]; // ±1
+
+        d_col_ind[p] = s2;
+
+        cuDoubleComplex v = d_h1e[ijshift];
+        if (parity1 == -1) { v.x = -v.x; v.y = -v.y; }
+        d_vals[p] = v;
+
+    } else {
+        // -----------------------
+        // h2e contribution entry:
+        // for each i in row s1:
+        //   s2 = dexc(s1,i).s2, ijshift = dexc(s1,i).ijshift, parity1
+        //   for each j in row s2:
+        //     target = dexc(s2,j).s2, klshift = dexc(s2,j).ijshift, parity2
+        //     A(s1, target) += parity1*parity2 * h2e[ijshift, klshift]
+        // -----------------------
+        const int t2 = t - ndexc;         // 0 .. ndexc*ndexc-1
+        const int i  = t2 / ndexc;        // 0 .. ndexc-1
+        const int j  = t2 - i*ndexc;      // 0 .. ndexc-1
+
+        const int s2      = d_dexc[base_s1 + 3*i + 0];
+        const int ijshift = d_dexc[base_s1 + 3*i + 1];
+        const int parity1 = d_dexc[base_s1 + 3*i + 2];
+
+        // Row s2 in d_dexc
+        const int base_s2 = 3 * (s2 * ndexc);
+
+        const int target  = d_dexc[base_s2 + 3*j + 0];
+        const int klshift = d_dexc[base_s2 + 3*j + 1];
+        const int parity2 = d_dexc[base_s2 + 3*j + 2];
+
+        d_col_ind[p] = target;
+
+        cuDoubleComplex v = d_h2e[(long long)ijshift * norbs2 + klshift];
+        const int parity = parity1 * parity2;
+        if (parity == -1) { v.x = -v.x; v.y = -v.y; }
+        d_vals[p] = v;
+    }
+}
+
+extern "C" void lm_apply_array12_same_spin_spmm_wrapper(
+    cuDoubleComplex* d_out,                 // [states1 x states2]
+    const cuDoubleComplex* d_C,             // [states1 x states2]
+    const int* d_dexc,                      // [states1 * ndexc * 3]
+    const cuDoubleComplex* d_h1e,
+    const cuDoubleComplex* d_h2e,
+    int states1,
+    int states2,
+    int ndexc,
+    int norbs,
+    int inc1,   // from your existing logic
+    int inc2)   // from your existing logic
+{
+    if (states1 == 0 || states2 == 0 || ndexc == 0) return;
+
+    // nnz_per_row = ndexc*(ndexc+1)
+    const long long nnz_per_row_ll = (long long)ndexc * (long long)(ndexc + 1);
+    const long long nnz_total_ll   = (long long)states1 * nnz_per_row_ll;
+
+    // If you want 32-bit CSR indices, row_ptr values must fit in int.
+    if (nnz_total_ll > (long long)std::numeric_limits<int>::max()) {
+        throw std::runtime_error("CSR nnz too large for 32-bit row_ptr; switch to 64-bit indices.");
+    }
+
+    const int nnz_per_row = (int)nnz_per_row_ll;
+    const int nnz_total   = (int)nnz_total_ll;
+
+    // ---- Build CSR row_ptr: row_ptr[r] = r * nnz_per_row ----
+    thrust::device_vector<int> d_row_ptr(states1 + 1);
+    thrust::sequence(d_row_ptr.begin(), d_row_ptr.end(), 0, nnz_per_row);
+
+    // ---- Allocate CSR col/value arrays ----
+    thrust::device_vector<int>            d_col_ind(nnz_total);
+    thrust::device_vector<cuDoubleComplex> d_vals(nnz_total);
+
+    // ---- Fill col_ind and values in parallel ----
+    {
+        int threads = 256;
+        int blocks  = (nnz_total + threads - 1) / threads;
+
+        build_same_spin_csr_cols_vals_kernel<<<blocks, threads>>>(
+            thrust::raw_pointer_cast(d_col_ind.data()),
+            thrust::raw_pointer_cast(d_vals.data()),
+            d_dexc,
+            d_h1e,
+            d_h2e,
+            states1,
+            ndexc,
+            norbs);
+
+        CHECK_CUDA(cudaGetLastError());
+        CHECK_CUDA(cudaDeviceSynchronize());
+    }
+
+    // ---- cuSPARSE SpMM: out = alpha*A*C + beta*out ----
+    static cusparseHandle_t handle = nullptr;
+    static bool handle_init = false;
+    if (!handle_init) {
+        CHECK_CUSPARSE(cusparseCreate(&handle));
+        handle_init = true;
+    }
+
+    // A is CSR: (states1 x states1)
+    cusparseSpMatDescr_t matA;
+    CHECK_CUSPARSE(cusparseCreateCsr(
+        &matA,
+        (int64_t)states1, (int64_t)states1, (int64_t)nnz_total,
+        (void*)thrust::raw_pointer_cast(d_row_ptr.data()),
+        (void*)thrust::raw_pointer_cast(d_col_ind.data()),
+        (void*)thrust::raw_pointer_cast(d_vals.data()),
+        CUSPARSE_INDEX_32I, CUSPARSE_INDEX_32I,
+        CUSPARSE_INDEX_BASE_ZERO,
+        CUDA_C_64F));
+
+    // Dense descriptors for B (= d_C) and C (= d_out)
+    // cuSPARSE supports ROW or COL order, but not arbitrary 2D strides.
+    // Your two common layouts are:
+    //   Row-major: inc2==1  (ld = states2)
+    //   Col-major: inc1==1  (ld = states1)
+    cusparseOrder_t order;
+    int ld;
+
+    if (inc2 == 1) {
+        // row-major
+        order = CUSPARSE_ORDER_ROW;
+        ld    = inc1; // should equal states2
+    } else if (inc1 == 1) {
+        // column-major
+        order = CUSPARSE_ORDER_COL;
+        ld    = inc2; // should equal states1
+    } else {
+        CHECK_CUSPARSE(cusparseDestroySpMat(matA));
+        throw std::runtime_error("Unsupported dense layout for cuSPARSE DnMat (need row-major or col-major).");
+    }
+
+    cusparseDnMatDescr_t matB, matC;
+    CHECK_CUSPARSE(cusparseCreateDnMat(
+        &matB,
+        (int64_t)states1, (int64_t)states2, (int64_t)ld,
+        (void*)d_C,
+        CUDA_C_64F,
+        order));
+
+    CHECK_CUSPARSE(cusparseCreateDnMat(
+        &matC,
+        (int64_t)states1, (int64_t)states2, (int64_t)ld,
+        (void*)d_out,
+        CUDA_C_64F,
+        order));
+
+    cuDoubleComplex alpha = make_cuDoubleComplex(1.0, 0.0);
+    cuDoubleComplex beta  = make_cuDoubleComplex(1.0, 0.0); // accumulate into existing out
+
+    size_t bufferSize = 0;
+    CHECK_CUSPARSE(cusparseSpMM_bufferSize(
+        handle,
+        CUSPARSE_OPERATION_NON_TRANSPOSE,
+        CUSPARSE_OPERATION_NON_TRANSPOSE,
+        &alpha,
+        matA, matB,
+        &beta,
+        matC,
+        CUDA_C_64F,
+        CUSPARSE_SPMM_ALG_DEFAULT,
+        &bufferSize));
+
+    void* dBuffer = nullptr;
+    CHECK_CUDA(cudaMalloc(&dBuffer, bufferSize));
+
+    CHECK_CUSPARSE(cusparseSpMM(
+        handle,
+        CUSPARSE_OPERATION_NON_TRANSPOSE,
+        CUSPARSE_OPERATION_NON_TRANSPOSE,
+        &alpha,
+        matA, matB,
+        &beta,
+        matC,
+        CUDA_C_64F,
+        CUSPARSE_SPMM_ALG_DEFAULT,
+        dBuffer));
+
+    CHECK_CUDA(cudaFree(dBuffer));
+
+    CHECK_CUSPARSE(cusparseDestroyDnMat(matB));
+    CHECK_CUSPARSE(cusparseDestroyDnMat(matC));
+    CHECK_CUSPARSE(cusparseDestroySpMat(matA));
+
+    CHECK_CUDA(cudaGetLastError());
+    CHECK_CUDA(cudaDeviceSynchronize());
+}
+
+__global__ void same_spin_build_raw_keys_vals_kernel(
+    unsigned long long* __restrict__ d_keys,   // [nnz_raw]
+    cuDoubleComplex* __restrict__ d_vals,      // [nnz_raw]
+    const int* __restrict__ d_dexc,            // [states1 * ndexc * 3]
+    const cuDoubleComplex* __restrict__ d_h1e, // [norbs2]
+    const cuDoubleComplex* __restrict__ d_h2e, // [norbs2 * norbs2]
+    int states1,
+    int ndexc,
+    int norbs)
+{
+    const int norbs2 = norbs * norbs;
+
+    const long long nnz_per_row = (long long)ndexc * (long long)(ndexc + 1);
+    const long long nnz_raw     = (long long)states1 * nnz_per_row;
+
+    long long p = (long long)blockIdx.x * blockDim.x + threadIdx.x;
+    if (p >= nnz_raw) return;
+
+    const int s1 = (int)(p / nnz_per_row);
+    const int t  = (int)(p - (long long)s1 * nnz_per_row);
+
+    const int base_s1 = 3 * (s1 * ndexc);
+
+    int col = 0;
+    cuDoubleComplex val = make_cuDoubleComplex(0.0, 0.0);
+
+    if (t < ndexc) {
+        // h1e term: (s1 -> s2)
+        const int i = t;
+
+        const int s2      = d_dexc[base_s1 + 3*i + 0];
+        const int ijshift = d_dexc[base_s1 + 3*i + 1];
+        const int parity1 = d_dexc[base_s1 + 3*i + 2];
+
+        col = s2;
+
+        val = d_h1e[ijshift];
+        if (parity1 == -1) { val.x = -val.x; val.y = -val.y; }
+
+    } else {
+        // h2e term: (s1 -> target) via s2 row
+        const int t2 = t - ndexc;
+        const int i  = t2 / ndexc;
+        const int j  = t2 - i*ndexc;
+
+        const int s2      = d_dexc[base_s1 + 3*i + 0];
+        const int ijshift = d_dexc[base_s1 + 3*i + 1];
+        const int parity1 = d_dexc[base_s1 + 3*i + 2];
+
+        const int base_s2 = 3 * (s2 * ndexc);
+
+        const int target  = d_dexc[base_s2 + 3*j + 0];
+        const int klshift = d_dexc[base_s2 + 3*j + 1];
+        const int parity2 = d_dexc[base_s2 + 3*j + 2];
+
+        col = target;
+
+        val = d_h2e[(long long)ijshift * norbs2 + klshift];
+        const int parity = parity1 * parity2;
+        if (parity == -1) { val.x = -val.x; val.y = -val.y; }
+    }
+
+    // Safety: keep indices in range; if out-of-range, write a 0 entry
+    if (col < 0 || col >= states1) {
+        col = 0;
+        val = make_cuDoubleComplex(0.0, 0.0);
+    }
+
+    const unsigned long long key =
+        ( (unsigned long long)(unsigned int)s1 << 32 ) |
+        ( (unsigned long long)(unsigned int)col );
+
+    d_keys[p] = key;
+    d_vals[p] = val;
+}
+
+__global__ void same_spin_extract_cols_and_rowcounts_kernel(
+    const unsigned long long* __restrict__ d_keys_unique, // [nnz_unique]
+    int nnz_unique,
+    int* __restrict__ d_col_ind,      // [nnz_unique]
+    int* __restrict__ d_row_counts,   // [states1]
+    int states1)
+{
+    int k = blockIdx.x * blockDim.x + threadIdx.x;
+    if (k >= nnz_unique) return;
+
+    unsigned long long key = d_keys_unique[k];
+    int row = (int)(key >> 32);
+    int col = (int)(key & 0xFFFFFFFFull);
+
+    d_col_ind[k] = col;
+
+    if (row >= 0 && row < states1) {
+        atomicAdd(&d_row_counts[row], 1);
+    }
+}
+
+extern "C" void lm_apply_array12_same_spin_spmm_csr_coalesced_wrapper(
+    cuDoubleComplex* d_out,
+    const cuDoubleComplex* d_C,
+    const int* d_dexc,
+    const cuDoubleComplex* d_h1e,
+    const cuDoubleComplex* d_h2e,
+    int states1,
+    int states2,
+    int ndexc,
+    int norbs,
+    int inc1,
+    int inc2)
+{
+    if (states1 <= 0 || states2 <= 0 || ndexc <= 0) return;
+
+    // ------------------------------------------------------------
+    // 1) Build RAW COO contributions (duplicates allowed)
+    //    raw nnz per row = ndexc + ndexc*ndexc = ndexc*(ndexc+1)
+    // ------------------------------------------------------------
+    const long long nnz_per_row = (long long)ndexc * (long long)(ndexc + 1);
+    const long long nnz_raw_ll  = (long long)states1 * nnz_per_row;
+
+    if (nnz_raw_ll <= 0) return;
+    if (nnz_raw_ll > (long long)std::numeric_limits<int>::max()) {
+        // You can support larger by switching some ints to int64 in cuSPARSE.
+        throw std::runtime_error("nnz_raw too large for this 32-bit implementation");
+    }
+
+    const int nnz_raw = (int)nnz_raw_ll;
+
+    thrust::device_vector<unsigned long long> d_keys_raw(nnz_raw);
+    thrust::device_vector<cuDoubleComplex>    d_vals_raw(nnz_raw);
+
+    {
+        int threads = 256;
+        int blocks  = (nnz_raw + threads - 1) / threads;
+
+        same_spin_build_raw_keys_vals_kernel<<<blocks, threads>>>(
+            thrust::raw_pointer_cast(d_keys_raw.data()),
+            thrust::raw_pointer_cast(d_vals_raw.data()),
+            d_dexc, d_h1e, d_h2e,
+            states1, ndexc, norbs);
+
+        CHECK_CUDA(cudaGetLastError());
+        CHECK_CUDA(cudaDeviceSynchronize());
+    }
+
+    // ------------------------------------------------------------
+    // 2) Sort by (row,col) key
+    // ------------------------------------------------------------
+    thrust::sort_by_key(d_keys_raw.begin(), d_keys_raw.end(), d_vals_raw.begin());
+
+    // ------------------------------------------------------------
+    // 3) Reduce duplicates: (row,col) sums its contributions
+    // ------------------------------------------------------------
+    thrust::device_vector<unsigned long long> d_keys_uni(nnz_raw);
+    thrust::device_vector<cuDoubleComplex>    d_vals_uni(nnz_raw);
+
+    auto end_pair = thrust::reduce_by_key(
+        d_keys_raw.begin(), d_keys_raw.end(),
+        d_vals_raw.begin(),
+        d_keys_uni.begin(),
+        d_vals_uni.begin(),
+        thrust::equal_to<unsigned long long>(),
+        cuCadd_op());
+
+    int nnz_unique = (int)(end_pair.first - d_keys_uni.begin());
+    if (nnz_unique <= 0) return;
+
+    d_keys_uni.resize(nnz_unique);
+    d_vals_uni.resize(nnz_unique);
+
+    // ------------------------------------------------------------
+    // 4) Build CSR row_ptr + col_ind from unique COO
+    // ------------------------------------------------------------
+    thrust::device_vector<int> d_row_counts(states1);
+    thrust::fill(d_row_counts.begin(), d_row_counts.end(), 0);
+
+    thrust::device_vector<int> d_col_ind(nnz_unique);
+
+    {
+        int threads = 256;
+        int blocks  = (nnz_unique + threads - 1) / threads;
+
+        same_spin_extract_cols_and_rowcounts_kernel<<<blocks, threads>>>(
+            thrust::raw_pointer_cast(d_keys_uni.data()),
+            nnz_unique,
+            thrust::raw_pointer_cast(d_col_ind.data()),
+            thrust::raw_pointer_cast(d_row_counts.data()),
+            states1);
+
+        CHECK_CUDA(cudaGetLastError());
+        CHECK_CUDA(cudaDeviceSynchronize());
+    }
+
+    // CSR row_ptr: exclusive_scan(row_counts) + last element = nnz_unique
+    thrust::device_vector<int> d_row_ptr(states1 + 1);
+    thrust::exclusive_scan(d_row_counts.begin(), d_row_counts.end(), d_row_ptr.begin());
+
+    CHECK_CUDA(cudaMemcpy(
+        thrust::raw_pointer_cast(d_row_ptr.data()) + states1,
+        &nnz_unique,
+        sizeof(int),
+        cudaMemcpyHostToDevice));
+
+    // ------------------------------------------------------------
+    // 5) cuSPARSE SpMM: out += A * C
+    // A is CSR(states1 x states1), B is dense(states1 x states2), C is dense(states1 x states2)
+    // ------------------------------------------------------------
+    static cusparseHandle_t handle = nullptr;
+    static bool handle_init = false;
+    if (!handle_init) {
+        CHECK_CUSPARSE(cusparseCreate(&handle));
+        handle_init = true;
+    }
+
+    cusparseSpMatDescr_t matA;
+    CHECK_CUSPARSE(cusparseCreateCsr(
+        &matA,
+        (int64_t)states1, (int64_t)states1, (int64_t)nnz_unique,
+        (void*)thrust::raw_pointer_cast(d_row_ptr.data()),
+        (void*)thrust::raw_pointer_cast(d_col_ind.data()),
+        (void*)thrust::raw_pointer_cast(d_vals_uni.data()),
+        CUSPARSE_INDEX_32I, CUSPARSE_INDEX_32I,
+        CUSPARSE_INDEX_BASE_ZERO,
+        CUDA_C_64F));
+
+    // Dense matrix descriptors:
+    // cuSPARSE only supports ROW or COL order (not arbitrary strides).
+    cusparseOrder_t order;
+    int ld = 0;
+
+    if (inc2 == 1) {
+        // row-major: idx = row*inc1 + col*1, so ld should be #cols == states2
+        order = CUSPARSE_ORDER_ROW;
+        ld = inc1;
+    } else if (inc1 == 1) {
+        // col-major: idx = row*1 + col*inc2, so ld should be #rows == states1
+        order = CUSPARSE_ORDER_COL;
+        ld = inc2;
+    } else {
+        CHECK_CUSPARSE(cusparseDestroySpMat(matA));
+        throw std::runtime_error("Unsupported dense layout (need row-major or col-major contiguous)");
+    }
+
+    cusparseDnMatDescr_t matB, matC;
+    CHECK_CUSPARSE(cusparseCreateDnMat(
+        &matB,
+        (int64_t)states1, (int64_t)states2, (int64_t)ld,
+        (void*)d_C,
+        CUDA_C_64F,
+        order));
+
+    CHECK_CUSPARSE(cusparseCreateDnMat(
+        &matC,
+        (int64_t)states1, (int64_t)states2, (int64_t)ld,
+        (void*)d_out,
+        CUDA_C_64F,
+        order));
+
+    cuDoubleComplex alpha = make_cuDoubleComplex(1.0, 0.0);
+    cuDoubleComplex beta  = make_cuDoubleComplex(1.0, 0.0); // accumulate into existing out
+
+    size_t bufferSize = 0;
+    CHECK_CUSPARSE(cusparseSpMM_bufferSize(
+        handle,
+        CUSPARSE_OPERATION_NON_TRANSPOSE,
+        CUSPARSE_OPERATION_NON_TRANSPOSE,
+        &alpha,
+        matA, matB,
+        &beta,
+        matC,
+        CUDA_C_64F,
+        CUSPARSE_SPMM_ALG_DEFAULT,
+        &bufferSize));
+
+    void* dBuffer = nullptr;
+    CHECK_CUDA(cudaMalloc(&dBuffer, bufferSize));
+
+    CHECK_CUSPARSE(cusparseSpMM(
+        handle,
+        CUSPARSE_OPERATION_NON_TRANSPOSE,
+        CUSPARSE_OPERATION_NON_TRANSPOSE,
+        &alpha,
+        matA, matB,
+        &beta,
+        matC,
+        CUDA_C_64F,
+        CUSPARSE_SPMM_ALG_DEFAULT,
+        dBuffer));
+
+    CHECK_CUDA(cudaFree(dBuffer));
+
+    CHECK_CUSPARSE(cusparseDestroyDnMat(matB));
+    CHECK_CUSPARSE(cusparseDestroyDnMat(matC));
+    CHECK_CUSPARSE(cusparseDestroySpMat(matA));
+
+    CHECK_CUDA(cudaGetLastError());
+    CHECK_CUDA(cudaDeviceSynchronize());
 }

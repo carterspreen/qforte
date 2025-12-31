@@ -476,7 +476,7 @@ void FCIComputerGPU::lm_apply_array12_same_spin_opt_gpu(
     thrust::device_vector<int> d_dexc(dexc.begin(), dexc.end());
 
     // Allocate temp_global on device: size states1 * states1
-    thrust::device_vector<cuDoubleComplex> d_temp(states1 * states1);
+    // thrust::device_vector<cuDoubleComplex> d_temp(states1 * states1);
 
     // Get device pointers
     cuDoubleComplex* d_out = thrust::raw_pointer_cast(out.d_data().data());
@@ -484,37 +484,67 @@ void FCIComputerGPU::lm_apply_array12_same_spin_opt_gpu(
     const int* d_dexc_ptr = thrust::raw_pointer_cast(d_dexc.data());
     const cuDoubleComplex* d_h1e = thrust::raw_pointer_cast(h1e.read_d_data().data());
     const cuDoubleComplex* d_h2e = thrust::raw_pointer_cast(h2e.read_d_data().data());
-    cuDoubleComplex* d_temp_ptr = thrust::raw_pointer_cast(d_temp.data());
+    // cuDoubleComplex* d_temp_ptr = thrust::raw_pointer_cast(d_temp.data());
 
     timer_.acc_end("==> same spin data transfer");
 
-    timer_.acc_begin("==> same spin prep kernel");
-    lm_same_spin_build_temp_tiled_wrapper(
-        d_temp_ptr,
+    timer_.acc_begin("==> same spin kernel (CSR SpMM)");
+
+    // lm_apply_array12_same_spin_spmm_wrapper(
+    //     d_out,
+    //     d_C,
+    //     d_dexc_ptr,
+    //     d_h1e,
+    //     d_h2e,
+    //     states1,
+    //     states2,
+    //     ndexc,
+    //     norbs,
+    //     inc1,
+    //     inc2);
+
+    lm_apply_array12_same_spin_spmm_csr_coalesced_wrapper(
+        d_out,
+        d_C,
         d_dexc_ptr,
         d_h1e,
         d_h2e,
         states1,
-        ndexc,
-        norbs);
-
-    // for proper timing (DEBUG)
-    // cudaDeviceSynchronize();`
-    timer_.acc_end("==> same spin prep kernel");
-
-    timer_.acc_begin("==> same spin kernel");
-    lm_apply_array12_same_spin_opt_gemv_tiled_wrapper(
-        d_out,
-        d_C,
-        d_temp_ptr,
-        states1,
         states2,
+        ndexc,
+        norbs,
         inc1,
         inc2);
+
+    timer_.acc_end("==> same spin kernel (CSR SpMM)");
+
+    // timer_.acc_begin("==> same spin prep kernel");
+    // lm_same_spin_build_temp_tiled_wrapper(
+    //     d_temp_ptr,
+    //     d_dexc_ptr,
+    //     d_h1e,
+    //     d_h2e,
+    //     states1,
+    //     ndexc,
+    //     norbs);
+
+    // // for proper timing (DEBUG)
+    // // cudaDeviceSynchronize();`
+    // timer_.acc_end("==> same spin prep kernel");
+
+    // timer_.acc_begin("==> same spin kernel");
+    // lm_apply_array12_same_spin_opt_gemv_tiled_wrapper(
+    //     d_out,
+    //     d_C,
+    //     d_temp_ptr,
+    //     states1,
+    //     states2,
+    //     inc1,
+    //     inc2);
     
-    // for proper timing (DEBUG)
-    // cudaDeviceSynchronize();
-    timer_.acc_end("==> same spin kernel");
+    // // for proper timing (DEBUG)
+    // // cudaDeviceSynchronize();
+    // timer_.acc_end("==> same spin kernel");
 }
 
 

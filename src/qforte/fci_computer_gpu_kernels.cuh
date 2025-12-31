@@ -381,3 +381,37 @@ extern "C" void lm_apply_array12_same_spin_opt_gemv_tiled_wrapper(
     int states2,
     int inc1,
     int inc2);
+
+// ==============================================
+// New Same Spin Implementation
+// ==============================================
+
+extern "C" void lm_apply_array12_same_spin_spmm_wrapper(
+    cuDoubleComplex* d_out,                 // [states1 x states2]
+    const cuDoubleComplex* d_C,             // [states1 x states2]
+    const int* d_dexc,                      // [states1 * ndexc * 3]
+    const cuDoubleComplex* d_h1e,
+    const cuDoubleComplex* d_h2e,
+    int states1,
+    int states2,
+    int ndexc,
+    int norbs,
+    int inc1,   // from your existing logic
+    int inc2);   // from your existing logic
+
+// ==============================================
+// even newer Same Spin Implementation with cuSPARSE
+// ==============================================
+
+extern "C" void lm_apply_array12_same_spin_spmm_csr_coalesced_wrapper(
+    cuDoubleComplex* d_out,
+    const cuDoubleComplex* d_C,
+    const int* d_dexc,
+    const cuDoubleComplex* d_h1e,
+    const cuDoubleComplex* d_h2e,
+    int states1,
+    int states2,
+    int ndexc,
+    int norbs,
+    int inc1,
+    int inc2);
