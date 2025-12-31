@@ -1,4 +1,5 @@
 #include "tensor_gpu.h"
+#include "tensor_gpu_kernels.cuh"
 #include "blas_math.h"
 #include "cuda_runtime.h"
 #include "tensor.h"
@@ -1073,6 +1074,59 @@ TensorGPU TensorGPU::transpose_gpu() const
         throw std::runtime_error("Unsupported data type in conj_transpose.");
     }
     return T;
+}
+
+void TensorGPU::fineGrainedTranspose()
+{
+    gpu_error();
+    ndim_error(2);
+
+    const int width = static_cast<int>(shape_[1]);
+    const int height = static_cast<int>(shape_[0]);
+
+    if (data_type_ == "complex") {
+        // Create temporary buffer for out-of-place transpose
+        thrust::device_vector<cuDoubleComplex> temp(size_);
+        
+        // Launch optimized transpose kernel
+        launchTransposeComplex(
+            thrust::raw_pointer_cast(temp.data()),
+            thrust::raw_pointer_cast(d_data_.data()),
+            width,
+            height
+        );
+        
+        // Wait for kernel to complete
+        cudaDeviceSynchronize();
+        
+        // Swap the data
+        d_data_.swap(temp);
+        
+    } else if (data_type_ == "real") {
+        // Create temporary buffer for out-of-place transpose
+        thrust::device_vector<double> temp(size_);
+        
+        // Launch optimized transpose kernel
+        launchTransposeDouble(
+            thrust::raw_pointer_cast(temp.data()),
+            thrust::raw_pointer_cast(d_re_data_.data()),
+            width,
+            height
+        );
+        
+        // Wait for kernel to complete
+        cudaDeviceSynchronize();
+        
+        // Swap the data
+        d_re_data_.swap(temp);
+        
+    } else {
+        throw std::runtime_error("Unsupported data type in fineGrainedTranspose.");
+    }
+    
+    // Update shape and strides
+    std::swap(shape_[0], shape_[1]);
+    std::swap(strides_[0], strides_[1]);
 }
 
 TensorGPU TensorGPU::general_transpose(const std::vector<size_t>& axes) const

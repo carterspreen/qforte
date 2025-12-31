@@ -165,6 +165,17 @@ class FCIComputerGPU {
       TensorGPU& h2e,
       const int norbs); 
 
+    void lm_apply_array12_diff_spin_opt_gpu_v2(
+      TensorGPU& out,
+      const std::vector<int>& adexc,
+      const std::vector<int>& bdexc,
+      const int alpha_states,
+      const int beta_states,
+      const int nadexc,
+      const int nbdexc,
+      TensorGPU& h2e,
+      const int norbs);
+
     std::pair<TensorGPU, TensorGPU> calculate_dvec_spin_with_coeff();
 
     TensorGPU calculate_coeff_spin_with_dvec_cpu(std::pair<TensorGPU, TensorGPU>& dvec);

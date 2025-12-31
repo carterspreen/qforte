@@ -279,6 +279,8 @@ TensorGPU transpose() const;
 
 TensorGPU transpose_gpu() const;
 
+void fineGrainedTranspose();
+
 /**
  * Compute a new copy of this Tensor which is a transpose of this.
  *

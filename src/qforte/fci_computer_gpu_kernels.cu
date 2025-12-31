@@ -2,6 +2,14 @@
 #include <cuda_runtime.h>
 #include <iostream>
 
+#include <thrust/host_vector.h>
+#include <thrust/device_vector.h>
+#include <thrust/transform.h>
+#include <thrust/functional.h>
+#include <thrust/inner_product.h>
+#include <thrust/fill.h>
+#include <thrust/copy.h>
+
 
 // ==============================================
 // Original Implementation:
@@ -1366,5 +1374,401 @@ extern "C" void lm_apply_array12_same_spin_opt_gemv_tiled_wrapper(
         std::cerr << "lm_same_spin_gemv_tiled_kernel launch failed ("
                   << cudaGetErrorString(err) << ")\n";
         throw std::runtime_error("lm_same_spin_gemv_tiled_kernel launch failed");
+    }
+}
+
+
+// ==============================================
+// Diff spin new implementation
+// ==============================================
+
+// ---------------------------------------------------------
+// Utility: atomic add for cuDoubleComplex
+// ---------------------------------------------------------
+__device__ inline void atomicAdd_cuDoubleComplex(cuDoubleComplex* addr,
+                                                 const cuDoubleComplex val)
+{
+    atomicAdd(&addr->x, val.x);
+    atomicAdd(&addr->y, val.y);
+}
+
+// ---------------------------------------------------------
+// 1) Count alpha excitations per orbid: d_counts[orbid]
+//    adexc layout: for each (s1, i) with idx = s1*nadexc + i
+//      [ coff, orbij, sign ]
+// ---------------------------------------------------------
+__global__ void count_alpha_excitations_per_orbid_kernel(
+    const int* __restrict__ d_adexc,
+    int alpha_states,
+    int nadexc,
+    int norbs2,
+    int* __restrict__ d_counts)
+{
+    int flat = blockIdx.x * blockDim.x + threadIdx.x;
+    int total = alpha_states * nadexc;
+    if (flat >= total) return;
+
+    int base  = 3 * flat;
+    int orbij = d_adexc[base + 1];
+    if (orbij >= 0 && orbij < norbs2) {
+        atomicAdd(&d_counts[orbij], 1);
+    }
+}
+
+// ---------------------------------------------------------
+// 2) Fill CSR arrays for alpha excitations:
+//
+// d_ad_offsets: size norbs2+1 (CSR offsets)
+// d_cursors:    size norbs2, initialized to d_ad_offsets[0..norbs2-1]
+// d_ad_coff:    size total_ex (coff)
+// d_ad_boff:    size total_ex (boff = alpha state index)
+// d_ad_sign:    size total_ex (±1)
+// ---------------------------------------------------------
+__global__ void fill_alpha_csr_from_adexc_kernel(
+    const int* __restrict__ d_adexc,
+    int alpha_states,
+    int nadexc,
+    int norbs2,
+    const int* __restrict__ d_ad_offsets,
+    int* __restrict__ d_cursors,
+    int* __restrict__ d_ad_coff,
+    int* __restrict__ d_ad_boff,
+    int* __restrict__ d_ad_sign)
+{
+    int flat  = blockIdx.x * blockDim.x + threadIdx.x;
+    int total = alpha_states * nadexc;
+    if (flat >= total) return;
+
+    int base   = 3 * flat;
+    int coff   = d_adexc[base + 0];
+    int orbij  = d_adexc[base + 1];
+    int sign   = d_adexc[base + 2];
+
+    if (orbij < 0 || orbij >= norbs2) return;
+
+    int pos = atomicAdd(&d_cursors[orbij], 1);
+
+    d_ad_coff[pos] = coff;
+    d_ad_boff[pos] = flat / nadexc; // s1 = row index in adexc
+    d_ad_sign[pos] = sign;
+}
+
+// ---------------------------------------------------------
+// 3) Split beta excitations into SoA:
+//    bdexc layout: for each (s2, j) with flat = s2*nbdexc + j
+//      [ idx2, orbkl, parity ]
+// ---------------------------------------------------------
+__global__ void split_bdexc_kernel(
+    const int* __restrict__ d_bdexc,
+    int beta_states,
+    int nbdexc,
+    int* __restrict__ d_bd_idx2,
+    int* __restrict__ d_bd_orbkl,
+    int* __restrict__ d_bd_parity)
+{
+    int flat = blockIdx.x * blockDim.x + threadIdx.x;
+    int total = beta_states * nbdexc;
+    if (flat >= total) return;
+
+    int base = 3 * flat;
+    d_bd_idx2[flat]   = d_bdexc[base + 0];
+    d_bd_orbkl[flat]  = d_bdexc[base + 1];
+    d_bd_parity[flat] = d_bdexc[base + 2];
+}
+
+__global__ void lm_apply_array12_diff_spin_kernel(
+    cuDoubleComplex* __restrict__ d_out,
+    const cuDoubleComplex* __restrict__ d_C,
+    const int* __restrict__ d_ad_offsets, // size norbs2+1
+    const int* __restrict__ d_ad_coff,
+    const int* __restrict__ d_ad_boff,
+    const int* __restrict__ d_ad_sign,
+    const int* __restrict__ d_bd_idx2,
+    const int* __restrict__ d_bd_orbkl,
+    const int* __restrict__ d_bd_parity,
+    const cuDoubleComplex* __restrict__ d_h2e,
+    int alpha_states,
+    int beta_states,
+    int nbdexc,
+    int norbs)
+{
+    // Tunable tile sizes (keep small to be safe when everything is large)
+    constexpr int SIG_TILE  = 32; // # alpha excitations per tile
+    constexpr int BETA_TILE = 8;  // # beta determinants per block (y)
+    constexpr int J_TILE    = 32; // # beta excitations per tile
+
+    const int norbs2 = norbs * norbs;
+    const int orbid  = blockIdx.x;
+    if (orbid >= norbs2) return;
+
+    const int beta_tile_base = blockIdx.y * BETA_TILE;
+    const int local_beta     = threadIdx.y;
+    const int s2             = beta_tile_base + local_beta;
+
+    // CSR range for this orbid
+    const int ad_begin = d_ad_offsets[orbid];
+    const int ad_end   = d_ad_offsets[orbid + 1];
+    const int nsig     = ad_end - ad_begin;
+    if (nsig == 0) return;
+
+    const cuDoubleComplex* __restrict__ h2e_block =
+        d_h2e + static_cast<size_t>(orbid) * norbs2;
+
+    // Shared memory layout (ints only)
+    extern __shared__ int sh_int[];
+    int* sh_coff  = sh_int;                             // [SIG_TILE]
+    int* sh_boff  = sh_coff  + SIG_TILE;                // [SIG_TILE]
+    int* sh_sign  = sh_boff  + SIG_TILE;                // [SIG_TILE]
+    int* sh_idx2  = sh_sign  + SIG_TILE;                // [BETA_TILE * J_TILE]
+    int* sh_orbkl = sh_idx2  + BETA_TILE * J_TILE;      // [BETA_TILE * J_TILE]
+    int* sh_par   = sh_orbkl + BETA_TILE * J_TILE;      // [BETA_TILE * J_TILE]
+
+    const int local_sig  = threadIdx.x; // 0..SIG_TILE-1
+    const int block_size = blockDim.x * blockDim.y;
+    const int flat_tid   = threadIdx.y * blockDim.x + threadIdx.x;
+
+    // Loop over tiles of alpha excitations
+    for (int sig_base = 0; sig_base < nsig; sig_base += SIG_TILE) {
+
+        // 1) Load tile of alpha excitations into shared: coff, boff, sign
+        for (int t = flat_tid; t < SIG_TILE; t += block_size) {
+            int g = sig_base + t;
+            if (g < nsig) {
+                int idx = ad_begin + g;
+                sh_coff[t] = d_ad_coff[idx];
+                sh_boff[t] = d_ad_boff[idx];
+                sh_sign[t] = d_ad_sign[idx];
+            }
+        }
+        __syncthreads();
+
+        const int global_sig = sig_base + local_sig;
+
+        int row_in   = 0;
+        int row_out  = 0;
+        int sign     = 0;
+        const cuDoubleComplex* C_row = nullptr;
+
+        if (local_sig < SIG_TILE && global_sig < nsig) {
+            row_in  = sh_coff[local_sig];
+            row_out = sh_boff[local_sig];
+            sign    = sh_sign[local_sig];
+
+            if (row_in >= 0 && row_in < alpha_states) {
+                C_row = d_C + static_cast<size_t>(row_in) * beta_states;
+            }
+        }
+
+        const bool active = (s2 < beta_states) &&
+                            (global_sig < nsig) &&
+                            (local_sig < SIG_TILE) &&
+                            (C_row != nullptr);
+
+        cuDoubleComplex accum;
+        accum.x = 0.0;
+        accum.y = 0.0;
+
+        // 2) Loop over tiles of beta excitations j
+        for (int j_base = 0; j_base < nbdexc; j_base += J_TILE) {
+
+            // Load bdexc tile into shared for this beta tile
+            for (int jj = threadIdx.x; jj < J_TILE; jj += blockDim.x) {
+                int j_global = j_base + jj;
+                if (j_global >= nbdexc) break;
+
+                int tile_index = local_beta * J_TILE + jj;
+
+                if (s2 < beta_states) {
+                    int flat = s2 * nbdexc + j_global;
+                    sh_idx2[tile_index]  = d_bd_idx2[flat];
+                    sh_orbkl[tile_index] = d_bd_orbkl[flat];
+                    sh_par[tile_index]   = d_bd_parity[flat];
+                } else {
+                    // dummy
+                    sh_idx2[tile_index]  = 0;
+                    sh_orbkl[tile_index] = 0;
+                    sh_par[tile_index]   = 0;
+                }
+            }
+
+            __syncthreads();
+
+            if (active) {
+                int max_j = min(J_TILE, nbdexc - j_base);
+                for (int jj = 0; jj < max_j; ++jj) {
+                    int tile_index = local_beta * J_TILE + jj;
+
+                    int idx2   = sh_idx2[tile_index];
+                    int orbkl  = sh_orbkl[tile_index];
+                    int parity = sh_par[tile_index];
+
+                    if (idx2 < 0 || idx2 >= beta_states) continue;
+
+                    cuDoubleComplex ttt = h2e_block[orbkl];
+                    if (parity == -1) {
+                        ttt.x = -ttt.x;
+                        ttt.y = -ttt.y;
+                    }
+
+                    cuDoubleComplex cval = C_row[idx2];
+                    if (sign == -1) {
+                        cval.x = -cval.x;
+                        cval.y = -cval.y;
+                    }
+
+                    cuDoubleComplex prod = cuCmul(ttt, cval);
+                    accum = cuCadd(accum, prod);
+                }
+            }
+
+            __syncthreads();
+        }
+
+        // 3) Scatter to out: out[boff(isig), s2] += accum
+        if (active) {
+            int row_out_clamped = (row_out >= 0 && row_out < alpha_states)
+                                ? row_out : 0;
+            size_t out_idx =
+                static_cast<size_t>(row_out_clamped) * beta_states + s2;
+            atomicAdd_cuDoubleComplex(&d_out[out_idx], accum);
+        }
+
+        __syncthreads();
+    }
+}
+
+extern "C" void lm_apply_array12_diff_spin_wrapper_v2(
+    cuDoubleComplex* d_out,
+    const cuDoubleComplex* d_C,
+    const int* d_adexc,
+    const int* d_bdexc,
+    const cuDoubleComplex* d_h2e,
+    int alpha_states,
+    int beta_states,
+    int nadexc,
+    int nbdexc,
+    int norbs)
+{
+    const int norbs2      = norbs * norbs;
+    const int nadexc_tot  = alpha_states * nadexc;
+    const int betaexc_tot = beta_states * nbdexc;
+
+    // -----------------------------------
+    // Build CSR for alpha excitations on GPU
+    // -----------------------------------
+    thrust::device_vector<int> d_counts(norbs2, 0);
+
+    // here we compute the counts per orbid
+    {
+        int threads = 256;
+        int blocks  = (nadexc_tot + threads - 1) / threads;
+
+        count_alpha_excitations_per_orbid_kernel<<<blocks, threads>>>(
+            d_adexc,
+            alpha_states,
+            nadexc,
+            norbs2,
+            thrust::raw_pointer_cast(d_counts.data()));
+        cudaDeviceSynchronize();
+    }
+
+    // Compute offsets and total number of excitations
+    thrust::device_vector<int> d_ad_offsets(norbs2 + 1);
+    thrust::exclusive_scan(d_counts.begin(), d_counts.end(), d_ad_offsets.begin());
+
+    int total_ex = thrust::reduce(d_counts.begin(), d_counts.end(), 0, thrust::plus<int>());
+
+    // Set last offset = total_ex
+    cudaMemcpy(thrust::raw_pointer_cast(d_ad_offsets.data()) + norbs2, &total_ex, sizeof(int), cudaMemcpyHostToDevice);
+
+    // ------------------------------------
+    // at this point, d_ad_offsets contains 
+    // the complete CSR "row pointer" array
+    // ------------------------------------
+
+    // Allocate CSR data arrays
+    thrust::device_vector<int> d_ad_coff(total_ex);
+    thrust::device_vector<int> d_ad_boff(total_ex);
+    thrust::device_vector<int> d_ad_sign(total_ex);
+
+    // cursors initialized to offsets[0..norbs2-1]
+    thrust::device_vector<int> d_cursors(norbs2);
+    thrust::copy(d_ad_offsets.begin(), d_ad_offsets.begin() + norbs2, d_cursors.begin());
+
+    {
+        int threads = 256;
+        int blocks  = (nadexc_tot + threads - 1) / threads;
+
+        fill_alpha_csr_from_adexc_kernel<<<blocks, threads>>>(
+            d_adexc,
+            alpha_states,
+            nadexc,
+            norbs2,
+            thrust::raw_pointer_cast(d_ad_offsets.data()),
+            thrust::raw_pointer_cast(d_cursors.data()),
+            thrust::raw_pointer_cast(d_ad_coff.data()),
+            thrust::raw_pointer_cast(d_ad_boff.data()),
+            thrust::raw_pointer_cast(d_ad_sign.data()));
+        cudaDeviceSynchronize();
+    }
+
+    // -----------------------------------
+    // Build SoA for beta excitations on GPU
+    // -----------------------------------
+    thrust::device_vector<int> d_bd_idx2(betaexc_tot);
+    thrust::device_vector<int> d_bd_orbkl(betaexc_tot);
+    thrust::device_vector<int> d_bd_parity(betaexc_tot);
+
+    {
+        int threads = 256;
+        int blocks  = (betaexc_tot + threads - 1) / threads;
+
+        split_bdexc_kernel<<<blocks, threads>>>(
+            d_bdexc,
+            beta_states,
+            nbdexc,
+            thrust::raw_pointer_cast(d_bd_idx2.data()),
+            thrust::raw_pointer_cast(d_bd_orbkl.data()),
+            thrust::raw_pointer_cast(d_bd_parity.data()));
+        cudaDeviceSynchronize();
+    }
+
+    // -----------------------------------
+    // Launch tiled, shared-memory main kernel
+    // -----------------------------------
+    constexpr int SIG_TILE  = 32;
+    constexpr int BETA_TILE = 8;
+    constexpr int J_TILE    = 32;
+
+    dim3 block(SIG_TILE, BETA_TILE);
+    dim3 grid(norbs2, (beta_states + BETA_TILE - 1) / BETA_TILE);
+
+    size_t shmem_bytes =
+        static_cast<size_t>(
+            (3 * SIG_TILE + 3 * BETA_TILE * J_TILE) * sizeof(int));
+
+    lm_apply_array12_diff_spin_kernel<<<grid, block, shmem_bytes>>>(
+        d_out,
+        d_C,
+        thrust::raw_pointer_cast(d_ad_offsets.data()),
+        thrust::raw_pointer_cast(d_ad_coff.data()),
+        thrust::raw_pointer_cast(d_ad_boff.data()),
+        thrust::raw_pointer_cast(d_ad_sign.data()),
+        thrust::raw_pointer_cast(d_bd_idx2.data()),
+        thrust::raw_pointer_cast(d_bd_orbkl.data()),
+        thrust::raw_pointer_cast(d_bd_parity.data()),
+        d_h2e,
+        alpha_states,
+        beta_states,
+        nbdexc,
+        norbs);
+
+    cudaDeviceSynchronize();
+
+    cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        std::cerr << "lm_apply_array12_diff_spin_wrapper failed ("
+                  << cudaGetErrorString(err) << ")\n";
+        throw std::runtime_error("lm_apply_array12_diff_spin_wrapper execution failed");
     }
 }

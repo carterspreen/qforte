@@ -285,21 +285,38 @@ void FCIComputerGPU::apply_tensor_spat_12bdy_gpu(
         true);
     timer_.acc_end("=> same spin alpha outer");
 
-    timer_.acc_begin("=> same spin beta outer");    
+    timer_.acc_begin("=> same spin beta outer"); 
+
+    Cnew.fineGrainedTranspose();
+
     lm_apply_array12_same_spin_opt_gpu(
         Cnew, 
-        graph_.read_dexcb_vec(),
+        graph_.read_dexca_vec(), // dexca_tmp
         nalfa_strs_,
         nbeta_strs_, 
-        graph_.get_ndexcb(),
+        graph_.get_ndexca(),
         h1e, 
         h2e,
         norb_,
-        false);
+        true);
+       
+    // lm_apply_array12_same_spin_opt_gpu(
+    //     Cnew, 
+    //     graph_.read_dexcb_vec(),
+    //     nalfa_strs_,
+    //     nbeta_strs_, 
+    //     graph_.get_ndexcb(),
+    //     h1e, 
+    //     h2e,
+    //     norb_,
+    //     false);
+
+    Cnew.fineGrainedTranspose();
+
     timer_.acc_end("=> same spin beta outer");
 
     timer_.acc_begin("=> diff spin outer");
-    lm_apply_array12_diff_spin_opt_gpu(
+    lm_apply_array12_diff_spin_opt_gpu_v2(
         Cnew,
         graph_.read_dexca_vec(),
         graph_.read_dexcb_vec(),
@@ -309,6 +326,17 @@ void FCIComputerGPU::apply_tensor_spat_12bdy_gpu(
         graph_.get_ndexca(),
         h2e_einsum, 
         norb_); 
+
+    // lm_apply_array12_diff_spin_opt_gpu(
+    //     Cnew,
+    //     graph_.read_dexca_vec(),
+    //     graph_.read_dexcb_vec(),
+    //     nalfa_strs_,
+    //     nbeta_strs_, 
+    //     graph_.get_ndexca(),
+    //     graph_.get_ndexca(),
+    //     h2e_einsum, 
+    //     norb_); 
     timer_.acc_end("=> diff spin outer");
 
     C_ = Cnew;
@@ -488,6 +516,50 @@ void FCIComputerGPU::lm_apply_array12_same_spin_opt_gpu(
     // cudaDeviceSynchronize();
     timer_.acc_end("==> same spin kernel");
 }
+
+
+// ===============================
+// new diff spin test implementation
+// ===============================
+
+void FCIComputerGPU::lm_apply_array12_diff_spin_opt_gpu_v2(
+    TensorGPU& out,
+    const std::vector<int>& adexc,
+    const std::vector<int>& bdexc,
+    const int alpha_states,
+    const int beta_states,
+    const int nadexc,
+    const int nbdexc,
+    TensorGPU& h2e,
+    const int norbs)
+{
+    gpu_error();
+
+    // Copy excitation tables to device
+    thrust::device_vector<int> d_adexc(adexc.begin(), adexc.end());
+    thrust::device_vector<int> d_bdexc(bdexc.begin(), bdexc.end());
+
+    cuDoubleComplex* d_out = thrust::raw_pointer_cast(out.d_data().data());
+    const cuDoubleComplex* d_C = thrust::raw_pointer_cast(C_.d_data().data());
+    const cuDoubleComplex* d_h2e = thrust::raw_pointer_cast(h2e.d_data().data());
+
+    lm_apply_array12_diff_spin_wrapper_v2(
+        d_out,
+        d_C,
+        thrust::raw_pointer_cast(d_adexc.data()),
+        thrust::raw_pointer_cast(d_bdexc.data()),
+        d_h2e,
+        alpha_states,
+        beta_states,
+        nadexc,
+        nbdexc,
+        norbs);
+}
+
+// ==============================
+// end new diff spin test implementation
+// ==============================
+
 
 void FCIComputerGPU::lm_apply_array12_diff_spin_opt_gpu(
     TensorGPU& out,

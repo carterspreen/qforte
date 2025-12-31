@@ -310,6 +310,38 @@ extern "C" void lm_apply_array12_diff_spin_wrapper(
     int norbs);
 
 // ==============================================
+// LM Apply Array12 Diff Spin v2 (New Implementation)
+// ==============================================
+
+__global__ void lm_apply_array12_diff_spin_kernel(
+    cuDoubleComplex* __restrict__ d_out,
+    const cuDoubleComplex* __restrict__ d_C,
+    const int* __restrict__ d_ad_offsets, // size norbs2+1
+    const int* __restrict__ d_ad_coff,
+    const int* __restrict__ d_ad_boff,
+    const int* __restrict__ d_ad_sign,
+    const int* __restrict__ d_bd_idx2,
+    const int* __restrict__ d_bd_orbkl,
+    const int* __restrict__ d_bd_parity,
+    const cuDoubleComplex* __restrict__ d_h2e,
+    int alpha_states,
+    int beta_states,
+    int nbdexc,
+    int norbs);
+
+extern "C" void lm_apply_array12_diff_spin_wrapper_v2(
+    cuDoubleComplex* d_out,
+    const cuDoubleComplex* d_C,
+    const int* d_adexc,
+    const int* d_bdexc,
+    const cuDoubleComplex* d_h2e,
+    int alpha_states,
+    int beta_states,
+    int nadexc,
+    int nbdexc,
+    int norbs);
+
+// ==============================================
 // LM Apply Array12 Same Spin split & tiled
 // ==============================================
 

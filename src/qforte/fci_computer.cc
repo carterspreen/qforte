@@ -660,7 +660,7 @@ void FCIComputer::lm_apply_array12_diff_spin_opt(
     std::vector<int> boff(nadexc_tot);
 
     // here we are estimating the max number of participating excitations
-    // will not exceed the number of excitations for -> orbital 0
+    // will not exceed the number of excitations for orbital 0
     int nest = 0;
     for (int s1 = 0; s1 < alpha_states; ++s1) {
         for (int i = 0; i < nadexc; ++i) {
