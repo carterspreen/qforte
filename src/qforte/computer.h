@@ -147,6 +147,12 @@ class Computer {
 
     void zero_state();
 
+    // set the Computer to the Hartree-Fock state with nel electrons
+    void hartree_fock(int nel);
+
+    /// scale the current state by val
+    void scale(std::complex<double> val);
+
     /// get timings
     std::vector<std::pair<std::string, double>> get_timings() { return timings_; }
 

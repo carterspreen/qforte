@@ -23,9 +23,10 @@ class Gate {
      * @param target the target qubit
      * @param control the control qubit
      * @param gate the 4 x 4 matrix representation of the gate
+     * @param parameter for QISKIT the parameter of the gate (e.g., rotation angle)
      */
     Gate(const std::string& label, size_t target, size_t control,
-                std::complex<double> gate[4][4]);
+                std::complex<double> gate[4][4], std::complex<double> param = 0.0);
 
     Gate(const Gate& gate) = default;
 
@@ -57,6 +58,10 @@ class Gate {
     // Return the adjoint of this gate
     Gate adjoint() const;
 
+    // ADDED FOR QISKIT: return the gate parameter
+    std::complex<double> param() const;
+
+
   private:
     /// the label of this gate
     std::string label_;
@@ -67,6 +72,9 @@ class Gate {
     /// the matrix representatin of this gate.
     /// 1 qubit operators are represented by the top left 2 x 2 submatrix.
     complex_4_4_mat gate_;
+
+    // for QISKIT: Store the gate parameter (e.g., rotation angle)
+    std::complex<double> param_;
 
     /// This vector stores the canonical order of the 2-qubit basis, namely:
     /// control   target

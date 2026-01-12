@@ -291,6 +291,8 @@ PYBIND11_MODULE(qforte, m) {
         .def("set_coeff_vec", &Computer::set_coeff_vec)
         .def("set_state", &Computer::set_state)
         .def("zero_state", &Computer::zero_state)
+        .def("hartree_fock", &Computer::hartree_fock) //QISKIT
+        .def("scale", &Computer::scale) //QISKIT
         .def("get_timings", &Computer::get_timings)
         .def("clear_timings", &Computer::clear_timings)
         .def("str", &Computer::str)

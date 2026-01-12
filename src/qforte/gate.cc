@@ -10,8 +10,8 @@ const std::vector<size_t> Gate::index1{0, 1};
 const std::vector<size_t> Gate::index2{0, 1, 2, 3};
 
 Gate::Gate(const std::string& label, size_t target, size_t control,
-                         std::complex<double> gate[4][4])
-    : label_(label), target_(target), control_(control) {
+                         std::complex<double> gate[4][4], std::complex<double> param)
+    : label_(label), target_(target), control_(control), param_(param) {
     for (const auto& i : index2) {
         for (const auto& j : index2) {
             gate_[i][j] = gate[i][j];
@@ -94,6 +94,10 @@ Gate Gate::adjoint() const {
         return Gate("adj(" + label_ + ")", target_, control_, adj_gate);
     }
     return Gate(label_, target_, control_, adj_gate);
+}
+
+std::complex<double> Gate::param() const {
+    return param_;
 }
 
 const std::vector<std::pair<size_t, size_t>>& Gate::two_qubits_basis() {

@@ -44,7 +44,7 @@ Gate make_gate(std::string type, size_t target, size_t control, std::complex<dou
                 {1.0, 0.0},
                 {0.0, c},
             };
-            return Gate(type, target, control, gate);
+            return Gate(type, target, control, gate, parameter);
         }
         if (type == "Rx") {
             std::complex<double> a = std::cos(0.5 * parameter);
@@ -53,7 +53,7 @@ Gate make_gate(std::string type, size_t target, size_t control, std::complex<dou
                 {+a, -b},
                 {-b, +a},
             };
-            return Gate(type, target, control, gate);
+            return Gate(type, target, control, gate, parameter);
         }
         if (type == "Ry") {
             std::complex<double> a = std::cos(0.5 * parameter);
@@ -62,7 +62,7 @@ Gate make_gate(std::string type, size_t target, size_t control, std::complex<dou
                 {+a, -b},
                 {+b, +a},
             };
-            return Gate(type, target, control, gate);
+            return Gate(type, target, control, gate, parameter);
         }
         if (type == "Rz") {
             std::complex<double> tmp_a = -onei * 0.5 * parameter;
@@ -73,7 +73,7 @@ Gate make_gate(std::string type, size_t target, size_t control, std::complex<dou
                 {a, 0.0},
                 {0.0, b},
             };
-            return Gate(type, target, control, gate);
+            return Gate(type, target, control, gate, parameter);
         }
         if (type == "V") {
             std::complex<double> a = onei * 0.5 + 0.5;
@@ -106,6 +106,7 @@ Gate make_gate(std::string type, size_t target, size_t control, std::complex<dou
             };
             return Gate(type, target, control, gate);
         }
+        // QISKIT: this gate maps to Rx(pi/2)
         if (type == "Rzy") {
             std::complex<double> c = 1.0 / std::sqrt(2.0);
             std::complex<double> c_i = onei / std::sqrt(2.0);
@@ -121,7 +122,7 @@ Gate make_gate(std::string type, size_t target, size_t control, std::complex<dou
                 {+a, -b},
                 {+b, +a},
             };
-            return Gate(type, target, control, gate);
+            return Gate(type, target, control, gate, parameter);
         }
 
     } else {
@@ -142,7 +143,7 @@ Gate make_gate(std::string type, size_t target, size_t control, std::complex<dou
             //     {0.0, s  ,  c,  0.0},
             //     {0.0, 0.0, 0.0, 1.0},
             // };
-            return Gate(type, target, control, gate);
+            return Gate(type, target, control, gate, parameter);
         }
         if ((type == "cX") or (type == "CNOT")) {
             std::complex<double> gate[4][4]{
@@ -189,7 +190,7 @@ Gate make_gate(std::string type, size_t target, size_t control, std::complex<dou
                 {0.0, 0.0, 1.0, 0.0},
                 {0.0, 0.0, 0.0, c},
             };
-            return Gate(type, target, control, gate);
+            return Gate(type, target, control, gate, parameter);
         }
         if (type == "cV") {
             std::complex<double> a = onei * 0.5 + 0.5;
@@ -213,7 +214,7 @@ Gate make_gate(std::string type, size_t target, size_t control, std::complex<dou
                 {0.0, 0.0, a,   0.0},
                 {0.0, 0.0, 0.0, b},
             };
-            return Gate(type, target, control, gate);
+            return Gate(type, target, control, gate, parameter);
         }
         if (type == "SWAP") {
             std::complex<double> gate[4][4]{
@@ -232,7 +233,7 @@ Gate make_gate(std::string type, size_t target, size_t control, std::complex<dou
                 {0.0, 0.0,  +a,  -b},
                 {0.0, 0.0,  +b,  +a},
             };
-            return Gate(type, target, control, gate);
+            return Gate(type, target, control, gate, parameter);
         }
     }
     // If you reach this section then the gate type is not implemented or it is invalid.

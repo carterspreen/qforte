@@ -50,6 +50,26 @@ void Computer::set_state(std::vector<std::pair<QubitBasis, double_c>> state) {
 
 void Computer::zero_state() { std::fill(coeff_.begin(), coeff_.end(), 0.0); }
 
+//QISKIT
+void Computer::hartree_fock(int nel) {
+    if (nel > nqubit_) {
+        throw std::invalid_argument("Number of electrons exceeds number of qubits");
+    }
+    zero_state();
+    QubitBasis hf;
+    for (int i = 0; i < nel; ++i) {
+        hf.flip_bit(i);
+    }
+    coeff_[hf.add()] = 1.;
+}
+
+//QISKIT
+void Computer::scale(std::complex<double> val) {
+    for (auto coeff : coeff_) {
+        coeff *= val;
+    }
+}
+
 void Computer::apply_matrix(const std::vector<std::vector< std::complex<double> >>& Opmat){
     // std::vector<std::complex<double>> old_coeff = coeff_;
     std::vector<std::complex<double>> result(nbasis_, 0.0);
