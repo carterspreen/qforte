@@ -78,7 +78,7 @@ def require_fqe(fn):
 
 class FQEComputer:
     """
-    Thin Python adapter that exposes an FCIComputer-like API backed by FQE’s
+    Thin Python adapter that exposes an FCIComputer-like API backed by FQEs
     particle-/spin-resolved Wavefunction simulator.
 
     Notes on conventions:

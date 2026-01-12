@@ -245,162 +245,7 @@ extern "C" void inplace_givens_update_real_tiled_wrapper(
     double acc_coeff2);
 
 // ==============================================
-// LM Apply Array12 Same Spin kernels and wrappers
-// ==============================================
-
-__global__ void lm_apply_array12_same_spin_opt_kernel(
-    cuDoubleComplex* __restrict__ d_out,
-    const cuDoubleComplex* __restrict__ d_C,
-    const int* __restrict__ d_dexc,
-    const cuDoubleComplex* __restrict__ d_h1e,
-    const cuDoubleComplex* __restrict__ d_h2e,
-    int states1,
-    int states2,
-    int ndexc,
-    int norbs,
-    int inc1,
-    int inc2,
-    cuDoubleComplex* __restrict__ temp_global); // size states1*states1
-
-extern "C" void lm_apply_array12_same_spin_opt_wrapper(
-    cuDoubleComplex* d_out,
-    const cuDoubleComplex* d_C,
-    const int* d_dexc,
-    const cuDoubleComplex* d_h1e,
-    const cuDoubleComplex* d_h2e,
-    int states1,
-    int states2,
-    int ndexc,
-    int norbs,
-    int inc1,
-    int inc2,
-    cuDoubleComplex* __restrict__ temp_global); // size states1*states1
-
-// ==============================================
-// LM Apply Array12 Diff Spin kernels and wrappers
-// ==============================================
-
-__global__ void lm_apply_array12_diff_spin_kernel(
-    cuDoubleComplex* __restrict__ d_out,
-    const cuDoubleComplex* __restrict__ d_C,
-    const int* __restrict__ d_adexc,
-    const int* __restrict__ d_bdexc,
-    const cuDoubleComplex* __restrict__ d_h2e,
-    const int* __restrict__ d_signs,
-    const int* __restrict__ d_coff,
-    const int* __restrict__ d_boff,
-    int alpha_states,
-    int beta_states,
-    int nadexc,
-    int nbdexc,
-    int norbs,
-    int nsig,
-    int orbid);
-
-extern "C" void lm_apply_array12_diff_spin_wrapper(
-    cuDoubleComplex* d_out,
-    const cuDoubleComplex* d_C,
-    const int* d_adexc,
-    const int* d_bdexc,
-    const cuDoubleComplex* d_h2e,
-    int alpha_states,
-    int beta_states,
-    int nadexc,
-    int nbdexc,
-    int norbs);
-
-// ==============================================
-// LM Apply Array12 Diff Spin v2 (New Implementation)
-// ==============================================
-
-__global__ void lm_apply_array12_diff_spin_kernel(
-    cuDoubleComplex* __restrict__ d_out,
-    const cuDoubleComplex* __restrict__ d_C,
-    const int* __restrict__ d_ad_offsets, // size norbs2+1
-    const int* __restrict__ d_ad_coff,
-    const int* __restrict__ d_ad_boff,
-    const int* __restrict__ d_ad_sign,
-    const int* __restrict__ d_bd_idx2,
-    const int* __restrict__ d_bd_orbkl,
-    const int* __restrict__ d_bd_parity,
-    const cuDoubleComplex* __restrict__ d_h2e,
-    int alpha_states,
-    int beta_states,
-    int nbdexc,
-    int norbs);
-
-extern "C" void lm_apply_array12_diff_spin_wrapper_v2(
-    cuDoubleComplex* d_out,
-    const cuDoubleComplex* d_C,
-    const int* d_adexc,
-    const int* d_bdexc,
-    const cuDoubleComplex* d_h2e,
-    int alpha_states,
-    int beta_states,
-    int nadexc,
-    int nbdexc,
-    int norbs);
-
-// ==============================================
-// LM Apply Array12 Same Spin split & tiled
-// ==============================================
-
-__global__ void lm_same_spin_build_temp_tiled_kernel(
-    cuDoubleComplex* __restrict__ d_temp,   // [states1 * states1]
-    const int* __restrict__ d_dexc,         // [states1 * ndexc * 3]
-    const cuDoubleComplex* __restrict__ d_h1e,
-    const cuDoubleComplex* __restrict__ d_h2e,
-    int states1,
-    int ndexc,
-    int norbs);
-
-extern "C" void lm_same_spin_build_temp_tiled_wrapper(
-    cuDoubleComplex* d_temp,
-    const int* d_dexc,
-    const cuDoubleComplex* d_h1e,
-    const cuDoubleComplex* d_h2e,
-    int states1,
-    int ndexc,
-    int norbs);
-
-__global__ void lm_same_spin_gemv_tiled_kernel(
-    cuDoubleComplex* __restrict__ d_out,
-    const cuDoubleComplex* __restrict__ d_C,
-    const cuDoubleComplex* __restrict__ d_temp,
-    int states1,
-    int states2,
-    int inc1,
-    int inc2);
-
-
-extern "C" void lm_apply_array12_same_spin_opt_gemv_tiled_wrapper(
-    cuDoubleComplex* d_out,
-    const cuDoubleComplex* d_C,
-    const cuDoubleComplex* d_temp,
-    int states1,
-    int states2,
-    int inc1,
-    int inc2);
-
-// ==============================================
-// New Same Spin Implementation
-// ==============================================
-
-extern "C" void lm_apply_array12_same_spin_spmm_wrapper(
-    cuDoubleComplex* d_out,                 // [states1 x states2]
-    const cuDoubleComplex* d_C,             // [states1 x states2]
-    const int* d_dexc,                      // [states1 * ndexc * 3]
-    const cuDoubleComplex* d_h1e,
-    const cuDoubleComplex* d_h2e,
-    int states1,
-    int states2,
-    int ndexc,
-    int norbs,
-    int inc1,   // from your existing logic
-    int inc2);   // from your existing logic
-
-// ==============================================
-// even newer Same Spin Implementation with cuSPARSE
+// Same Spin Implementation with cuSPARSE
 // ==============================================
 
 extern "C" void lm_apply_array12_same_spin_spmm_csr_coalesced_wrapper(
@@ -417,10 +262,10 @@ extern "C" void lm_apply_array12_same_spin_spmm_csr_coalesced_wrapper(
     int inc2);
 
 // ===============================================
-// even newer Diff Spin Implementation
+// Diff Spin Implementation
 // ===============================================
 
-extern "C" void lm_apply_array12_diff_spin_wrapper_v3(
+extern "C" void lm_apply_array12_diff_spin_wrapper(
     cuDoubleComplex* d_out,
     const cuDoubleComplex* d_C,
     const int* d_adexc,
