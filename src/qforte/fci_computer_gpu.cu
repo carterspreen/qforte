@@ -269,7 +269,7 @@ void FCIComputerGPU::apply_tensor_spat_12bdy_gpu(
         throw std::invalid_argument("Expecting h2e to be nso x nso x nso x nso for apply_tensor_spat_12bdy_gpu");
     }
 
-    TensorGPU Cnew({nalfa_strs_, nbeta_strs_}, "Cnew", true);
+    TensorGPU Cnew({nalfa_strs_, nbeta_strs_}, "Cnew", true, data_type_);
     Cnew.zero_gpu();
 
     timer_.acc_begin("=> same spin alpha outer");
@@ -333,7 +333,8 @@ void FCIComputerGPU::apply_tensor_spat_012bdy_gpu(
 {
     gpu_error();
 
-    TensorGPU Cold = C_;
+    TensorGPU Cold({nalfa_strs_, nbeta_strs_}, "Cold", true, data_type_);
+    Cold.copy_in_gpu(C_);
 
     apply_tensor_spat_12bdy_gpu(
         h1e,
@@ -453,34 +454,51 @@ void FCIComputerGPU::lm_apply_array12_same_spin_opt_gpu(
 
     // Transfer dexc to device
     thrust::device_vector<int> d_dexc(dexc.begin(), dexc.end());
-
-    // Allocate temp_global on device: size states1 * states1
-    // thrust::device_vector<cuDoubleComplex> d_temp(states1 * states1);
-
-    // Get device pointers
-    cuDoubleComplex* d_out = thrust::raw_pointer_cast(out.d_data().data());
-    const cuDoubleComplex* d_C = thrust::raw_pointer_cast(C_.d_data().data());
     const int* d_dexc_ptr = thrust::raw_pointer_cast(d_dexc.data());
-    const cuDoubleComplex* d_h1e = thrust::raw_pointer_cast(h1e.read_d_data().data());
-    const cuDoubleComplex* d_h2e = thrust::raw_pointer_cast(h2e.read_d_data().data());
-    // cuDoubleComplex* d_temp_ptr = thrust::raw_pointer_cast(d_temp.data());
 
     timer_.acc_end("==> same spin data transfer");
 
     timer_.acc_begin("==> same spin kernel (CSR SpMM)");
 
-    lm_apply_array12_same_spin_spmm_csr_coalesced_wrapper(
-        d_out,
-        d_C,
-        d_dexc_ptr,
-        d_h1e,
-        d_h2e,
-        states1,
-        states2,
-        ndexc,
-        norbs,
-        inc1,
-        inc2);
+    if (data_type_ == "real") {
+        // Get device pointers for real data
+        double* d_out_real = thrust::raw_pointer_cast(out.d_re_data().data());
+        const double* d_C_real = thrust::raw_pointer_cast(C_.d_re_data().data());
+        const double* d_h1e_real = thrust::raw_pointer_cast(h1e.read_d_re_data().data());
+        const double* d_h2e_real = thrust::raw_pointer_cast(h2e.read_d_re_data().data());
+
+        lm_apply_array12_same_spin_spmm_csr_coalesced_wrapper_real(
+            d_out_real,
+            d_C_real,
+            d_dexc_ptr,
+            d_h1e_real,
+            d_h2e_real,
+            states1,
+            states2,
+            ndexc,
+            norbs,
+            inc1,
+            inc2);
+    } else {
+        // Get device pointers for complex data
+        cuDoubleComplex* d_out = thrust::raw_pointer_cast(out.d_data().data());
+        const cuDoubleComplex* d_C = thrust::raw_pointer_cast(C_.d_data().data());
+        const cuDoubleComplex* d_h1e = thrust::raw_pointer_cast(h1e.read_d_data().data());
+        const cuDoubleComplex* d_h2e = thrust::raw_pointer_cast(h2e.read_d_data().data());
+
+        lm_apply_array12_same_spin_spmm_csr_coalesced_wrapper(
+            d_out,
+            d_C,
+            d_dexc_ptr,
+            d_h1e,
+            d_h2e,
+            states1,
+            states2,
+            ndexc,
+            norbs,
+            inc1,
+            inc2);
+    }
 
     timer_.acc_end("==> same spin kernel (CSR SpMM)");
 }
@@ -502,21 +520,41 @@ void FCIComputerGPU::lm_apply_array12_diff_spin_opt_gpu(
     thrust::device_vector<int> d_adexc(adexc.begin(), adexc.end());
     thrust::device_vector<int> d_bdexc(bdexc.begin(), bdexc.end());
 
-    cuDoubleComplex* d_out = thrust::raw_pointer_cast(out.d_data().data());
-    const cuDoubleComplex* d_C = thrust::raw_pointer_cast(C_.d_data().data());
-    const cuDoubleComplex* d_h2e = thrust::raw_pointer_cast(h2e.d_data().data());
+    if (data_type_ == "real") {
+        // Get device pointers for real data
+        double* d_out_real = thrust::raw_pointer_cast(out.d_re_data().data());
+        const double* d_C_real = thrust::raw_pointer_cast(C_.d_re_data().data());
+        const double* d_h2e_real = thrust::raw_pointer_cast(h2e.d_re_data().data());
 
-    lm_apply_array12_diff_spin_wrapper(
-        d_out,
-        d_C,
-        thrust::raw_pointer_cast(d_adexc.data()),
-        thrust::raw_pointer_cast(d_bdexc.data()),
-        d_h2e,
-        alpha_states,
-        beta_states,
-        nadexc,
-        nbdexc,
-        norbs);
+        lm_apply_array12_diff_spin_wrapper_real(
+            d_out_real,
+            d_C_real,
+            thrust::raw_pointer_cast(d_adexc.data()),
+            thrust::raw_pointer_cast(d_bdexc.data()),
+            d_h2e_real,
+            alpha_states,
+            beta_states,
+            nadexc,
+            nbdexc,
+            norbs);
+    } else {
+        // Get device pointers for complex data
+        cuDoubleComplex* d_out = thrust::raw_pointer_cast(out.d_data().data());
+        const cuDoubleComplex* d_C = thrust::raw_pointer_cast(C_.d_data().data());
+        const cuDoubleComplex* d_h2e = thrust::raw_pointer_cast(h2e.d_data().data());
+
+        lm_apply_array12_diff_spin_wrapper(
+            d_out,
+            d_C,
+            thrust::raw_pointer_cast(d_adexc.data()),
+            thrust::raw_pointer_cast(d_bdexc.data()),
+            d_h2e,
+            alpha_states,
+            beta_states,
+            nadexc,
+            nbdexc,
+            norbs);
+    }
 }
 
 /// TODO: Not implemented in GPU so skipping

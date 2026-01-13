@@ -50,16 +50,24 @@ print("\n")
 
 timer = qf.local_timer()
 
-# fci_comp_cpu = qf.FCIComputer(nel=nel, sz=sz, norb=norb)
-fci_comp_gpu = qf.FCIComputerGPU(nel=nel, sz=sz, norb=norb, on_gpu=False, data_type="complex")
+fci_comp_cpu = qf.FCIComputer(nel=nel, sz=sz, norb=norb)
+fci_comp_gpu = qf.FCIComputerGPU(nel=nel, sz=sz, norb=norb, on_gpu=False, data_type="real")
 
-# fci_comp_cpu.hartree_fock()
+fci_comp_cpu.hartree_fock()
 fci_comp_gpu.hartree_fock_cpu()
 
 sqham = mol.sq_hamiltonian
 
-hermitian_pairs = qf.SQOpPool()
-hermitian_pairs.add_hermitian_pairs(1.0, sqham)
+# sd_pool = qf.SQOpPool()
+# sd_pool.set_orb_spaces(ref)
+# sd_pool.fill_pool("SD")
+
+# sd_gpu = qf.SQOpPoolGPU(data_type="real")
+# sd_gpu.set_orb_spaces(ref)
+# sd_gpu.fill_pool("SD")
+
+# hermitian_pairs = qf.SQOpPool()
+# hermitian_pairs.add_hermitian_pairs(1.0, sqham)
 
 time = 0.1
 r = 3
@@ -88,7 +96,7 @@ app_trot = False
 # ===> apply tensor <====
 
 if(app_tens):
-    # fci_comp_cpu.hartree_fock()
+    fci_comp_cpu.hartree_fock()
     fci_comp_gpu.hartree_fock_cpu()
 
     # timer.reset()
@@ -103,9 +111,9 @@ if(app_tens):
     # TODO: ask nick how GPU tensor conversion should be handled 
     # should we add parts to system factory to convert to GPU tensors or make user handle it?
 
-    mo_oeis_gpu = qf.TensorGPU(mol.mo_oeis.shape(), "mo_oeis_gpu", False)
-    mo_teis_gpu = qf.TensorGPU(mol.mo_teis.shape(), "mo_teis_gpu", False)
-    mo_teis_einsum_gpu = qf.TensorGPU(mol.mo_teis_einsum.shape(), "mo_teis_einsum_gpu", False)
+    mo_oeis_gpu = qf.TensorGPU(mol.mo_oeis.shape(), "mo_oeis_gpu", False, "real")
+    mo_teis_gpu = qf.TensorGPU(mol.mo_teis.shape(), "mo_teis_gpu", False, "real")
+    mo_teis_einsum_gpu = qf.TensorGPU(mol.mo_teis_einsum.shape(), "mo_teis_einsum_gpu", False, "real")
     mo_oeis_gpu.fill_from_tensor_cpu(mol.mo_oeis, mol.mo_oeis.shape())
     mo_teis_gpu.fill_from_tensor_cpu(mol.mo_teis, mol.mo_teis.shape())
     mo_teis_einsum_gpu.fill_from_tensor_cpu(mol.mo_teis_einsum, mol.mo_teis_einsum.shape())
@@ -124,18 +132,16 @@ if(app_tens):
         norb)
     timer.record('FCI GPU apply tensor')
 
-    # fci_comp_gpu.to_cpu()
-    # Cfci = fci_comp_cpu.get_state_deep()
-    # Cfci_gpu = qf.Tensor(Cfci.shape(), "Cfci_gpu")
-    # fci_comp_gpu.copy_to_tensor_cpu(Cfci_gpu)
-    # Cfci.subtract(Cfci_gpu)
+    fci_comp_gpu.to_cpu()
+    Cfci = fci_comp_cpu.get_state_deep()
+    Cfci_gpu = qf.Tensor(Cfci.shape(), "Cfci_gpu")
+    fci_comp_gpu.copy_to_tensor_cpu(Cfci_gpu)
+    Cfci.subtract(Cfci_gpu)
 
     # print(f"\n |dC| apply tensor: {(Cfci.norm())} \n")
 
     # print(fci_comp_cpu.get_state_deep())
     # print(Cfci_gpu)
-
-
 
     # print(fci_comp1)
     # print(fqe_comp1)

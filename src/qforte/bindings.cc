@@ -336,7 +336,7 @@ PYBIND11_MODULE(qforte, m) {
             py::arg("antiherm") = false,
             py::arg("adjoint") = false
             )
-        .def("evolve_pool_trotter_not_inplace", &FCIComputer::evolve_pool_trotter_basic, 
+        .def("evolve_pool_trotter_basic_not_inplace", &FCIComputer::evolve_pool_trotter_basic, 
             py::arg("sqop"),
             py::arg("antiherm") = false,
             py::arg("adjoint") = false
@@ -522,6 +522,11 @@ PYBIND11_MODULE(qforte, m) {
              py::arg("shape"),
              py::arg("name") = "T",
              py::arg("on_gpu") = false)
+        .def(py::init<const std::vector<size_t>&, const std::string&, bool, const std::string&>(),
+             py::arg("shape"),
+             py::arg("name") = "T",
+             py::arg("on_gpu") = false,
+             py::arg("data_type") = "complex")
         .def("to_gpu", &TensorGPU::to_gpu)
         .def("to_cpu", &TensorGPU::to_cpu)
         .def("add", &TensorGPU::add, py::arg("other"))
