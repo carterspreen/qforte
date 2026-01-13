@@ -479,7 +479,26 @@ void FCIComputerGPU::lm_apply_array12_same_spin_opt_gpu(
             norbs,
             inc1,
             inc2);
-    } else {
+    } else if (data_type_ == "complex" && h2e.data_type() == "real") {
+        // Get device pointers for complex and real data
+        cuDoubleComplex* d_out = thrust::raw_pointer_cast(out.d_data().data());
+        const cuDoubleComplex* d_C = thrust::raw_pointer_cast(C_.d_data().data());
+        const double* d_h1e = thrust::raw_pointer_cast(h1e.read_d_re_data().data());
+        const double* d_h2e = thrust::raw_pointer_cast(h2e.read_d_re_data().data());
+
+        lm_apply_array12_same_spin_spmm_csr_coalesced_wrapper_mixed(
+            d_out,
+            d_C,
+            d_dexc_ptr,
+            d_h1e,
+            d_h2e,
+            states1,
+            states2,
+            ndexc,
+            norbs,
+            inc1,
+            inc2);
+    } else if (data_type_ == "complex" && h2e.data_type() == "complex") {
         // Get device pointers for complex data
         cuDoubleComplex* d_out = thrust::raw_pointer_cast(out.d_data().data());
         const cuDoubleComplex* d_C = thrust::raw_pointer_cast(C_.d_data().data());
@@ -498,6 +517,9 @@ void FCIComputerGPU::lm_apply_array12_same_spin_opt_gpu(
             norbs,
             inc1,
             inc2);
+    } else {
+        // Error handling for unsupported data types
+        throw std::runtime_error("Unsupported data type combination in lm_apply_array12_same_spin_opt_gpu");
     }
 
     timer_.acc_end("==> same spin kernel (CSR SpMM)");
@@ -537,7 +559,24 @@ void FCIComputerGPU::lm_apply_array12_diff_spin_opt_gpu(
             nadexc,
             nbdexc,
             norbs);
-    } else {
+    } else if (data_type_ == "complex" && h2e.data_type() == "real") {
+        // Get device pointers for complex and real data
+        cuDoubleComplex* d_out = thrust::raw_pointer_cast(out.d_data().data());
+        const cuDoubleComplex* d_C = thrust::raw_pointer_cast(C_.d_data().data());
+        const double* d_h2e = thrust::raw_pointer_cast(h2e.d_re_data().data());
+
+        lm_apply_array12_diff_spin_wrapper_mixed(
+            d_out,
+            d_C,
+            thrust::raw_pointer_cast(d_adexc.data()),
+            thrust::raw_pointer_cast(d_bdexc.data()),
+            d_h2e,
+            alpha_states,
+            beta_states,
+            nadexc,
+            nbdexc,
+            norbs);
+    } else if (data_type_ == "complex" && h2e.data_type() == "complex") {
         // Get device pointers for complex data
         cuDoubleComplex* d_out = thrust::raw_pointer_cast(out.d_data().data());
         const cuDoubleComplex* d_C = thrust::raw_pointer_cast(C_.d_data().data());
@@ -554,6 +593,9 @@ void FCIComputerGPU::lm_apply_array12_diff_spin_opt_gpu(
             nadexc,
             nbdexc,
             norbs);
+    } else {
+        // Error handling for unsupported data types
+        throw std::runtime_error("Unsupported data type combination in lm_apply_array12_diff_spin_opt_gpu");
     }
 }
 
