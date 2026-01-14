@@ -504,7 +504,9 @@ class FQEComputer:
             dt = float(evolution_time) / max(1, int(trotter_steps))
 
             if trotter_order == 1:
-                it = reversed(pool.terms()) if adjoint else pool.terms()
+                # Create list to allow multiple iterations in the Trotter loop
+                terms = list(pool.terms())
+                it = list(reversed(terms)) if adjoint else terms
                 for _ in range(int(trotter_steps)):
                     for coeff0, sq_term in it:
                         self.evolve_individual_sqop_term(dt, coeff0, sq_term, antiherm, adjoint)
