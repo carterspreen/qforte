@@ -15,10 +15,14 @@ geom = [
     ('H', (0., 0., 8.0)),
     ('H', (0., 0., 9.0)), 
     ('H', (0., 0.,10.0)),
-    # ('H', (0., 0.,11.0)),
-    # ('H', (0., 0.,12.0)),
-    # ('H', (0., 0.,13.0)),
-    # ('H', (0., 0.,14.0)),
+    ('H', (0., 0.,11.0)),
+    ('H', (0., 0.,12.0)),
+    ('H', (0., 0.,13.0)),
+    ('H', (0., 0.,14.0)),
+    ('H', (0., 0.,15.0)),
+    ('H', (0., 0.,16.0)),
+    # ('H', (0., 0.,17.0)),
+    # ('H', (0., 0.,18.0)),
     ]
 
 # geom = [
@@ -28,10 +32,15 @@ geom = [
 #     ('H', (0., 0., 4.0))
 #     ]
 
+timer = qf.local_timer()
+
+timer.reset()
+
 # Get the molecule object that now contains both the fermionic and qubit Hamiltonians.
 mol = qf.system_factory(build_type='psi4', mol_geometry=geom, basis='sto-3g', run_fci=0)
 
-timer = qf.local_timer()
+timer.record("psi4 scp and setup")
+
  
 print("\n Initial FCIcomp Stuff")
 print("===========================")
@@ -44,8 +53,8 @@ norb = int(len(ref) / 2)
 print(f" nqbit:     {norb*2}")
 print(f" nel:       {nel}")
  
-fci_comp1 = qf.FCIComputer(nel=nel, sz=sz, norb=norb)
-fci_comp2 = qf.FCIComputer(nel=nel, sz=sz, norb=norb)
+# fci_comp1 = qf.FCIComputer(nel=nel, sz=sz, norb=norb)
+# fci_comp2 = qf.FCIComputer(nel=nel, sz=sz, norb=norb)
 
 fci_comp_thrust = qf.FCIComputerGPU(
     nel=nel, 
@@ -58,8 +67,8 @@ fci_comp_thrust = qf.FCIComputerGPU(
 reference = 'hf'
 
 if(reference == 'hf'):
-    fci_comp1.hartree_fock()
-    fci_comp2.hartree_fock()
+    # fci_comp1.hartree_fock()
+    # fci_comp2.hartree_fock()
     fci_comp_thrust.hartree_fock_cpu()
 
 
@@ -78,18 +87,27 @@ if(reference == 'hf'):
 sqham = mol.sq_hamiltonian
 # sqham.simplify()
 
+# timer.reset()
 
-sd_pool = qf.SQOpPool()
-sd_pool.set_orb_spaces(ref)
-sd_pool.fill_pool("SD")
-# print(sd_pool)
+# sd_pool = qf.SQOpPool()
+# sd_pool.set_orb_spaces(ref)
+# # sd_pool.fill_pool("SD")
+# sd_pool.fill_pool_kUpCCGSD(1)
+# # print(sd_pool)
+
+# timer.record('fill cpu pool')
+
+timer.reset()
 
 sd_gpu = qf.SQOpPoolGPU(data_type="real")
 sd_gpu.set_orb_spaces(ref)
-sd_gpu.fill_pool("SD")
+# sd_gpu.fill_pool("SD")
+sd_gpu.fill_pool_kUpCCGSD(1)
+
 
 fci_comp_thrust.populate_index_arrays_for_pool_evo(sd_gpu)
 
+timer.record("fill gpu pool")
 
 len = sd_gpu.check_mu_tuple_container_sizes()
 
@@ -122,15 +140,15 @@ fci_comp_thrust.to_gpu()
 
 for _ in range(N):
 # Call Trotter for fci_comp1
-    timer.reset()
-    fci_comp1.evolve_pool_trotter(
-        sd_pool,
-        time,
-        r,
-        order,
-        antiherm=True,
-        adjoint=False)
-    timer.record('trotter fci_comp1')
+    # timer.reset()
+    # fci_comp1.evolve_pool_trotter(
+    #     sd_pool,
+    #     time,
+    #     r,
+    #     order,
+    #     antiherm=True,
+    #     adjoint=False)
+    # timer.record('trotter fci_comp1')
 
 
     # print(fci_comp1.str(print_complex=False))
@@ -158,18 +176,18 @@ for _ in range(N):
     # print(fci_comp2)
     # print(fci_comp2.get_state().norm())
 
-    fci_comp_thrust.to_cpu()
+    # fci_comp_thrust.to_cpu()
 
-    C1 = fci_comp1.get_state_deep()
-    C1_dup = fci_comp1.get_state_deep()
+    # C1 = fci_comp1.get_state_deep()
+    # C1_dup = fci_comp1.get_state_deep()
     # C2 = fci_comp2.get_state_deep()
 
-    print(" coppying to C3 ")
+    # print(" coppying to C3 ")
 
-    C3 = qf.Tensor(C1.shape(), "C3")
-    fci_comp_thrust.copy_to_tensor_cpu(C3)
+    # C3 = qf.Tensor(C1.shape(), "C3")
+    # fci_comp_thrust.copy_to_tensor_cpu(C3)
 
-    print(" done coppying to C3 ")
+    # print(" done coppying to C3 ")
 
     # print(f"C1: {C1}")
     # print(f"C2: {C2}")
@@ -177,7 +195,7 @@ for _ in range(N):
 
     # C1.subtract(C2)
     # C2.subtract(C3)
-    C1_dup.subtract(C3)
+    # C1_dup.subtract(C3)
 
     
 
@@ -185,9 +203,9 @@ for _ in range(N):
     # print(C3)
     # print(f"deltaC.norm() {C1.norm()}")
     # print(f"deltaC_thrust.norm() {C2.norm()}")
-    print(f"||C1 - C3|| {C1_dup.norm()}")
+    # print(f"||C1 - C3|| {C1_dup.norm()}")
 
-    fci_comp_thrust.to_gpu()
+    # fci_comp_thrust.to_gpu()
 
 
 fci_thrust_timer = fci_comp_thrust.get_acc_timer()

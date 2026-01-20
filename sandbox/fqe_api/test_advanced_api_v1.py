@@ -83,10 +83,10 @@ hermitian_pairs = qf.SQOpPool()
 hermitian_pairs.add_hermitian_pairs(1.0, sqham)
 
 time = 0.1
-r = 3
-order = 2
+r = 1
+order = 1
 
-N = 4
+N = 1
 
 ah = False
 adj = True
@@ -104,6 +104,11 @@ app_sqop = False
 app_tens = False
 app_exact_evo = False
 app_trot = True
+
+# Psi4 clamps num threads to 1 even for fqe precesses
+# if this is not explicitally set here!
+# import psi4
+# psi4.set_num_threads(1)
 
 
 
