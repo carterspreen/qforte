@@ -140,7 +140,7 @@
             fi
 
             micromamba activate "${mambaEnv}"
-            ./scripts/sh/build-mamba.sh
+            ./qiskit_api/sh/build-mamba.sh
 
           '';
 
