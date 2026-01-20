@@ -25,7 +25,6 @@ done
 SCRIPT_DIR="$(cd "$(dirname "$SOURCE")" && pwd)"
 
 #RUN FROM PROJECT ROOT
-#SCRIPT_DIR=$(CDPATH= cd "$(dirname "$0")" && pwd)
 PROJECT_ROOT=$(CDPATH= cd "$SCRIPT_DIR/../.." && pwd)
 cd "$PROJECT_ROOT" || exit 1
 
@@ -56,27 +55,32 @@ conda activate $QFORTE_CONDA_ENV
 echo "Setting CMAKE_PREFIX_PATH...\n"
 sed -i "s|set(CMAKE_PREFIX_PATH \".*\")|set(CMAKE_PREFIX_PATH \"$CONDA_PREFIX\")|" CMakeLists.txt
 
-#UPDATE THE MINIMUM REQUIRED VERSION OF CMAKE 
-echo "Patching pybind11 and fmt CMakeLists.txt to use a supported version of CMake..."
-#qforte
-sed -i 's/^cmake_minimum_required(.*$/cmake_minimum_required(VERSION 3.5)/' CMakeLists.txt
-#pybind11
-sed -i 's/^cmake_minimum_required(.*$/cmake_minimum_required(VERSION 3.5)/' lib/pybind11/CMakeLists.txt
-#fmt
-sed -i 's/^cmake_minimum_required(.*$/cmake_minimum_required(VERSION 3.5)/' lib/fmt/CMakeLists.txt
-
-#SET THE LIBOPENBLAS PATH DEPENDING ON OS
-OS="$(uname)"
-if [ "$OS" = "Linux" ]; then
-	echo "You are on Linux: using libopenblas.so"
-	sed -i 's|set(OPENBLAS_EXE ".*")|set(OPENBLAS_EXE ${CMAKE_PREFIX_PATH}/lib/libopenblas.so)|' CMakeLists.txt
-elif [ "$OS" = "Darwin" ]; then
-	echo "You are on MacOS: using libopenblas.dylib"
-	sed -i 's|set(OPENBLAS_EXE ".*")|set(OPENBLAS_EXE ${CMAKE_PREFIX_PATH}/lib/libopenblas.dylib)|' CMakeLists.txt
-else
-	echo "OS not supported -> Exiting..."
-	exit 1
-fi
-
 #BUILD
 python setup.py develop && echo "qforte successfully installed" || { echo "qforte failed to install"; exit 1; }
+
+##########
+# LEGACY #
+##########
+
+#UPDATE THE MINIMUM REQUIRED VERSION OF CMAKE 
+#echo "Patching pybind11 and fmt CMakeLists.txt to use a supported version of CMake..."
+#qforte
+#sed -i 's/^cmake_minimum_required(.*$/cmake_minimum_required(VERSION 3.5)/' CMakeLists.txt
+#pybind11
+#sed -i 's/^cmake_minimum_required(.*$/cmake_minimum_required(VERSION 3.5)/' lib/pybind11/CMakeLists.txt
+#fmt
+#sed -i 's/^cmake_minimum_required(.*$/cmake_minimum_required(VERSION 3.5)/' lib/fmt/CMakeLists.txt
+
+#SET THE LIBOPENBLAS PATH DEPENDING ON OS
+#OS="$(uname)"
+#if [ "$OS" = "Linux" ]; then
+#	echo "You are on Linux: using libopenblas.so"
+#	sed -i 's|set(OPENBLAS_EXE ".*")|set(OPENBLAS_EXE ${CMAKE_PREFIX_PATH}/lib/libopenblas.so)|' CMakeLists.txt
+#elif [ "$OS" = "Darwin" ]; then
+#	echo "You are on MacOS: using libopenblas.dylib"
+#	sed -i 's|set(OPENBLAS_EXE ".*")|set(OPENBLAS_EXE ${CMAKE_PREFIX_PATH}/lib/libopenblas.dylib)|' CMakeLists.txt
+#else
+#	echo "OS not supported -> Exiting..."
+#	exit 1
+#fi
+
