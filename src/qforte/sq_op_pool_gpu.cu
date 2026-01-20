@@ -570,6 +570,71 @@ void SQOpPoolGPU::fill_pool(std::string pool_type){
     }
 }
 
+void SQOpPoolGPU::fill_pool_kUpCCGSD(int kmax)
+{
+    for(int k=0; k < kmax; ++k){
+        size_t norb = nocc_ + nvir_;
+        for(size_t i=0; i<norb; i++){
+            size_t ia = 2*i;
+            size_t ib = 2*i+1;
+            for (size_t a=i; a<norb; a++){
+                size_t aa = 2*a;
+                size_t ab = 2*a+1;
+
+                if( aa != ia ){
+                    SQOperator temp1a;
+                    temp1a.add_term(+1.0, {aa}, {ia});
+                    temp1a.add_term(-1.0, {ia}, {aa});
+                    temp1a.simplify();
+                    if(temp1a.terms().size() > 0){
+                        add_term(1.0, temp1a);
+                    }
+                }
+
+                if( ab != ib ){
+                    SQOperator temp1b;
+                    temp1b.add_term(+1.0, {ab}, {ib});
+                    temp1b.add_term(-1.0, {ib}, {ab});
+                    temp1b.simplify();
+                    if(temp1b.terms().size() > 0){
+                        add_term(1.0, temp1b);
+                    }
+                }
+            }
+        }
+
+        std::vector< std::vector<size_t> > uniqe_2bdy;
+        std::vector< std::vector<size_t> > adjnt_2bdy;
+
+        for(size_t p=0; p<norb; ++p){
+            size_t pa = 2 * p;
+            size_t pb = 2 * p + 1;
+            for(size_t q=0; q<norb; ++q){
+                size_t qa = 2 * q;
+                size_t qb = 2 * q + 1;
+
+                if((pa != qa) && (pb != qb)){
+                    SQOperator temp2abab;
+                    temp2abab.add_term(-1.0, {pa,pb}, {qa,qb});
+                    temp2abab.add_term(+1.0, {qb,qa}, {pb,pa});
+                    temp2abab.simplify();
+                    if(temp2abab.terms().size() > 0){
+                        std::vector<size_t> vtemp {std::get<1>(temp2abab.terms()[0])[0], std::get<1>(temp2abab.terms()[0])[1], std::get<2>(temp2abab.terms()[0])[0], std::get<2>(temp2abab.terms()[0])[1]};
+                        std::vector<size_t> vadjt {std::get<1>(temp2abab.terms()[1])[0], std::get<1>(temp2abab.terms()[1])[1], std::get<2>(temp2abab.terms()[1])[0], std::get<2>(temp2abab.terms()[1])[1]};
+                        if( (std::find(uniqe_2bdy.begin(), uniqe_2bdy.end(), vtemp) == uniqe_2bdy.end()) ){
+                            if( (std::find(adjnt_2bdy.begin(), adjnt_2bdy.end(), vtemp) == adjnt_2bdy.end()) ){
+                                uniqe_2bdy.push_back(vtemp);
+                                adjnt_2bdy.push_back(vadjt);
+                                add_term(1.0, temp2abab);
+                            }
+                        }
+                    }
+                }
+            }
+        }        
+    }
+}
+
 std::size_t SQOpPoolGPU::check_mu_tuple_container_sizes() const {
     const std::size_t s_ref = terms().size();
 

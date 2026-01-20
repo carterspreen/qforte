@@ -166,6 +166,13 @@ void FCIComputerGPU::set_element(
     C_.set(idxs, val);
 }
 
+std::complex<double> FCIComputerGPU::get_element(
+    const std::vector<size_t>& idxs
+        )
+{
+    return C_.get(idxs);
+}
+
 void FCIComputerGPU::gpu_error() const {
 
     if (not on_gpu_) {
@@ -2272,7 +2279,7 @@ void FCIComputerGPU::evolve_op_taylor_cpu(
 
         std::complex<double> coeff(0.0, -evolution_time);
         apply_sqop_gpu(op);
-        scale_cpu(coeff);
+        scale(coeff);
 
         Cevol.zaxpy(
             C_,
@@ -2539,6 +2546,36 @@ std::complex<double> FCIComputerGPU::get_exp_val_cpu(const SQOperator& sqop)
     return val;
 }
 
+std::complex<double> FCIComputerGPU::get_exp_val(const SQOperator& sqop)
+{
+    gpu_error();
+
+    TensorGPU Cin(
+        {nalfa_strs_, nbeta_strs_}, 
+        "Cin", 
+        true,
+        data_type_
+    );
+
+    Cin.copy_in_gpu(C_);
+
+    C_.zero_gpu();
+    
+    for (const auto& term : sqop.terms()) {
+        if(std::abs(std::get<0>(term)) > compute_threshold_){
+        apply_individual_sqop_term_gpu(
+            term,
+            Cin,
+            C_);
+        }
+    }
+
+    std::complex<double> val = C_.vector_dot(Cin);
+    C_.copy_in_gpu(Cin);
+
+    return val;
+}
+
 std::complex<double> FCIComputerGPU::get_exp_val_tensor_cpu(
     const std::complex<double> h0e, 
     const TensorGPU& h1e, 
@@ -2562,7 +2599,7 @@ std::complex<double> FCIComputerGPU::get_exp_val_tensor_cpu(
     return val;
 }
 
-void FCIComputerGPU::scale_cpu(const std::complex<double> a)
+void FCIComputerGPU::scale(const std::complex<double> a)
 {
     C_.scale(a);
 }
