@@ -1,4 +1,5 @@
 #include "tensor_gpu.h"
+#include "tensor_gpu_kernels.cuh"
 #include "blas_math.h"
 #include "cuda_runtime.h"
 #include "tensor.h"
@@ -23,6 +24,7 @@
 #include <string>
 #include <cmath>
 #include <sstream>
+#include <iomanip>
 #include <stdexcept>
 #include <cstring>
 #include <utility>
@@ -512,6 +514,23 @@ void TensorGPU::fill_from_nparray(std::vector<std::complex<double>> arr, std::ve
         }
     } else {
         throw std::runtime_error("Unsupported data type in fill_from_nparray().");
+    }
+}
+
+void TensorGPU::fill_from_tensor_cpu(const Tensor& other, std::vector<size_t> shape) {
+    cpu_error();
+    if (shape_ != shape) throw std::runtime_error("Shape mismatch in fill_from_tensor_cpu.");
+    if (other.size() != size_) throw std::runtime_error("Array size mismatch in fill_from_tensor_cpu.");
+
+    if (data_type_ == "complex") {
+        thrust::copy(other.read_data().begin(), other.read_data().end(), h_data_.begin());
+    } else if (data_type_ == "real") {
+        for (size_t i=0;i<size_;++i) {
+            if (std::abs(other.read_data()[i].imag()) > 1e-14) throw std::runtime_error("Imag component present loading into real tensor.");
+            h_re_data_[i] = other.read_data()[i].real();
+        }
+    } else {
+        throw std::runtime_error("Unsupported data type in fill_from_tensor_cpu().");
     }
 }
 
@@ -1041,6 +1060,75 @@ TensorGPU TensorGPU::transpose() const
     return T;
 }
 
+TensorGPU TensorGPU::transpose_gpu() const
+{
+    gpu_error();
+    ndim_error(2);
+
+    TensorGPU T({shape_[1], shape_[0]}, name_ + "_HT", true, data_type_);
+    if (data_type_ == "complex") {
+        for (size_t i=0;i<shape_[0];++i) for (size_t j=0;j<shape_[1];++j) T.d_data_[j*shape_[0]+i] = cuConj(d_data_[i*shape_[1]+j]);
+    } else if (data_type_ == "real") {
+        for (size_t i=0;i<shape_[0];++i) for (size_t j=0;j<shape_[1];++j) T.d_re_data_[j*shape_[0]+i] = d_re_data_[i*shape_[1]+j];
+    } else {
+        throw std::runtime_error("Unsupported data type in conj_transpose.");
+    }
+    return T;
+}
+
+void TensorGPU::fineGrainedTranspose()
+{
+    gpu_error();
+    ndim_error(2);
+
+    const int width = static_cast<int>(shape_[1]);
+    const int height = static_cast<int>(shape_[0]);
+
+    if (data_type_ == "complex") {
+        // Create temporary buffer for out-of-place transpose
+        thrust::device_vector<cuDoubleComplex> temp(size_);
+        
+        // Launch optimized transpose kernel
+        launchTransposeComplex(
+            thrust::raw_pointer_cast(temp.data()),
+            thrust::raw_pointer_cast(d_data_.data()),
+            width,
+            height
+        );
+        
+        // Wait for kernel to complete
+        cudaDeviceSynchronize();
+        
+        // Swap the data
+        d_data_.swap(temp);
+        
+    } else if (data_type_ == "real") {
+        // Create temporary buffer for out-of-place transpose
+        thrust::device_vector<double> temp(size_);
+        
+        // Launch optimized transpose kernel
+        launchTransposeDouble(
+            thrust::raw_pointer_cast(temp.data()),
+            thrust::raw_pointer_cast(d_re_data_.data()),
+            width,
+            height
+        );
+        
+        // Wait for kernel to complete
+        cudaDeviceSynchronize();
+        
+        // Swap the data
+        d_re_data_.swap(temp);
+        
+    } else {
+        throw std::runtime_error("Unsupported data type in fineGrainedTranspose.");
+    }
+    
+    // Update shape and strides
+    std::swap(shape_[0], shape_[1]);
+    std::swap(strides_[0], strides_[1]);
+}
+
 TensorGPU TensorGPU::general_transpose(const std::vector<size_t>& axes) const
 {
     cpu_error();
@@ -1160,36 +1248,98 @@ std::string TensorGPU::str(
         oss << shape_[dim]; if (dim<ndim()-1) oss << ","; 
     } 
     oss << ")\n"; 
-    if (print_data) { 
-        oss << "\n  Data:\n\n"; 
-        if (size_ > 0) { 
-            if (ndim() == 1) { 
-                for(size_t i = 0; i < size_; ++i) { 
-                    if (data_type_ == "complex") {
-                        oss << "  [" << i << "]=" << h_data_[i] << "\n"; 
-                    } else if (data_type_ == "real") {
-                        oss << "  [" << i << "]=" << h_re_data_[i] << "\n"; 
-                    } else {
-                        throw std::runtime_error("Unsupported data_type_ in print.");
+    
+    if (print_data) {
+        oss << "\n  Data:\n\n";
+        
+        if (size_ > 0) {
+            int order = ndim();
+            size_t nelem = size_;
+            
+            size_t page_size = 1L;
+            size_t rows = 1;
+            size_t cols = 1;
+            if (order >= 1) {
+                page_size *= shape_[order - 1];
+                rows = shape_[order - 1];
+            }
+            if (order >= 2) {
+                page_size *= shape_[order - 2];
+                rows = shape_[order - 2];
+                cols = shape_[order - 1];
+            }
+            
+            size_t pages = nelem / page_size;
+            for (size_t page = 0L; page < pages; page++) {
+                
+                if (order > 2) {
+                    oss << "  Page (";
+                    size_t num = page;
+                    size_t den = pages;
+                    size_t val;
+                    for (int k = 0; k < order - 2; k++) {
+                        den /= shape_[k];
+                        val = num / den;
+                        num -= val * den;
+                        oss << val << ",";
                     }
-                } 
-            } else { // simplified print for >1 dims
-                for(size_t i = 0; i < size_; ++i) { 
+                    oss << "*,*):\n\n";
+                }
+                
+                size_t page_offset = page * page_size;
+                
+                if (order == 0) {
                     if (data_type_ == "complex") {
-                        oss << h_data_[i] << " "; 
+                        oss << "  " << h_data_[0] << "\n";
                     } else if (data_type_ == "real") {
-                        oss << h_re_data_[i] << " "; 
-                    } else {
-                        throw std::runtime_error("Unsupported data_type_ in print.");
+                        oss << "  " << h_re_data_[0] << "\n";
                     }
-
-                    if ((i + 1) % shape_.back() == 0) {
-                        oss << "\n"; 
+                } else if (order == 1) {
+                    for (size_t i = 0; i < page_size; ++i) {
+                        oss << "  " << std::setw(5) << i << " ";
+                        if (data_type_ == "complex") {
+                            oss << h_data_[page_offset + i];
+                        } else if (data_type_ == "real") {
+                            oss << h_re_data_[page_offset + i];
+                        }
+                        oss << "\n";
+                    }
+                } else {
+                    for (size_t j = 0; j < cols; j += maxcols) {
+                        size_t ncols = (j + maxcols >= cols ? cols - j : maxcols);
+                        
+                        // Column Header
+                        oss << "  " << std::setw(5) << "";
+                        for (size_t jj = j; jj < j + ncols; jj++) {
+                            oss << std::setw(13) << jj;
+                        }
+                        oss << "\n";
+                        
+                        // Data
+                        for (size_t i = 0; i < rows; i++) {
+                            oss << "  " << std::setw(5) << i;
+                            for (size_t jj = j; jj < j + ncols; jj++) {
+                                size_t idx = page_offset + i * cols + jj;
+                                oss << std::setw(13) << std::fixed << std::setprecision(7);
+                                if (data_type_ == "complex") {
+                                    oss << h_data_[idx].real();
+                                } else if (data_type_ == "real") {
+                                    oss << h_re_data_[idx];
+                                }
+                            }
+                            oss << "\n";
+                        }
+                        
+                        // Block separator
+                        if (page < pages - 1 || j + maxcols < cols - 1) {
+                            oss << "\n";
+                        }
                     }
                 }
-            } 
-        } 
+            }
+        }
     }
+    
     if (reset) to_gpu(); 
     return oss.str();
 }

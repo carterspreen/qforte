@@ -23,6 +23,7 @@
 #include "fci_computer_gpu.h"
 #include "fci_graph_gpu.h"
 
+#include "cublas_math.cuh"
 #include "fci_computer_gpu_kernels.cuh"
 
 FCIComputerGPU::FCIComputerGPU(int nel, int sz, int norb, bool on_gpu, const std::string& data_type) : 
@@ -95,6 +96,9 @@ FCIComputerGPU::FCIComputerGPU(int nel, int sz, int norb, bool on_gpu, const std
 
     graph_ = FCIGraphGPU(nalfa_el_, nbeta_el_, norb_);
 
+    // start cublas math
+    math_gpu_init();
+
     // timer_ = local_timer();
 }
 
@@ -150,6 +154,8 @@ FCIComputerGPU::~FCIComputerGPU() {
         parityb_undag_gpu_real_.clear();
         parityb_undag_gpu_real_.shrink_to_fit();
 
+        math_gpu_finalize();
+
     } catch (const std::exception& e) {
         // std::cerr << "Caught exception in FCIComputerGPU destructor: " << e.what() << std::endl;
     } catch (...) {
@@ -176,7 +182,7 @@ std::complex<double> FCIComputerGPU::get_element(
 void FCIComputerGPU::gpu_error() const {
 
     if (not on_gpu_) {
-        throw std::runtime_error("Data not on GPU for FCIComputerGPU" + name_);
+        throw std::runtime_error("Data not on GPU for FCIComputerGPU " + name_);
     }
 
 }
@@ -184,7 +190,7 @@ void FCIComputerGPU::gpu_error() const {
 void FCIComputerGPU::cpu_error() const {
 
     if (on_gpu_) {
-        throw std::runtime_error("Data not on CPU for FCIComputerGPU" + name_);
+        throw std::runtime_error("Data not on CPU for FCIComputerGPU " + name_);
     }
 
 }
@@ -254,97 +260,90 @@ void FCIComputerGPU::apply_tensor_spin_1bdy(const TensorGPU& h1e, size_t norb) {
 }
 
 /// apply TensorGPUs represending 1-body and 2-body spatial-orbital indexed operator to the current state 
-void FCIComputerGPU::apply_tensor_spat_12bdy(
+void FCIComputerGPU::apply_tensor_spat_12bdy_gpu(
     const TensorGPU& h1e, 
     const TensorGPU& h2e, 
-    const TensorGPU& h2e_einsum, 
-    size_t norb) 
-{
-    if(h1e.size() != norb * norb){
-        throw std::invalid_argument("Expecting h1e to be norb x norb for apply_tensor_spat_12bdy");
+    TensorGPU& h2e_einsum, 
+    size_t norb) {
+
+    gpu_error();
+
+    if(h1e.size() != (norb) * (norb)){
+        throw std::invalid_argument("Expecting h1e to be nmo x nmo for apply_tensor_spat_12bdy_gpu");
     }
 
-    if(h2e.size() != norb * norb * norb * norb){
-        throw std::invalid_argument("Expecting h2e to be norb x norb x norb x norb for apply_tensor_spat_12bdy");
+    if(h2e.size() != (norb) * (norb) * (norb) * (norb) ){
+        throw std::invalid_argument("Expecting h2e to be nso x nso x nso x nso for apply_tensor_spat_12bdy_gpu");
     }
 
-    if(h2e_einsum.size() != norb * norb * norb * norb){
-        throw std::invalid_argument("Expecting h2e_einsum to be norb x norb x norb x norb for apply_tensor_spat_12bdy");
-    }
+    TensorGPU Cnew({nalfa_strs_, nbeta_strs_}, "Cnew", true, data_type_);
+    Cnew.zero_gpu();
 
-    TensorGPU Cnew({nalfa_strs_, nbeta_strs_}, "Cnew");
-
-    // Apply one-body terms
-    apply_array_1bdy_cpu(
-        Cnew,
-        graph_.read_dexca_vec(),
+    timer_.acc_begin("=> same spin alpha outer");
+    lm_apply_array12_same_spin_opt_gpu(
+        Cnew, 
+        graph_.read_dexca_vec(), // dexca_tmp
         nalfa_strs_,
-        nbeta_strs_,
+        nbeta_strs_, 
         graph_.get_ndexca(),
-        h1e,
+        h1e, 
+        h2e,
         norb_,
         true);
+    timer_.acc_end("=> same spin alpha outer");
 
-    apply_array_1bdy_cpu(
-        Cnew,
-        graph_.read_dexcb_vec(),
-        nalfa_strs_,
-        nbeta_strs_,
-        graph_.get_ndexcb(),
-        h1e,
-        norb_,
-        false);
+    timer_.acc_begin("=> same spin beta outer"); 
 
-    // Apply two-body terms (same spin)
-    lm_apply_array12_same_spin_opt_cpu(
-        Cnew,
-        graph_.read_dexca_vec(),
+    Cnew.fineGrainedTranspose();
+
+    lm_apply_array12_same_spin_opt_gpu(
+        Cnew, 
+        graph_.read_dexca_vec(), // dexca_tmp
         nalfa_strs_,
-        nbeta_strs_,
+        nbeta_strs_, 
         graph_.get_ndexca(),
-        h1e,
+        h1e, 
         h2e,
         norb_,
         true);
 
-    lm_apply_array12_same_spin_opt_cpu(
-        Cnew,
-        graph_.read_dexcb_vec(),
-        nalfa_strs_,
-        nbeta_strs_,
-        graph_.get_ndexcb(),
-        h1e,
-        h2e,
-        norb_,
-        false);
+    Cnew.fineGrainedTranspose();
 
-    // Apply two-body terms (different spin)
-    lm_apply_array12_diff_spin_opt_cpu(
+    timer_.acc_end("=> same spin beta outer");
+
+    timer_.acc_begin("=> diff spin outer");
+    lm_apply_array12_diff_spin_opt_gpu(
         Cnew,
         graph_.read_dexca_vec(),
         graph_.read_dexcb_vec(),
         nalfa_strs_,
-        nbeta_strs_,
+        nbeta_strs_, 
         graph_.get_ndexca(),
-        graph_.get_ndexcb(),
-        h2e_einsum,
-        norb_);
+        graph_.get_ndexca(),
+        h2e_einsum, 
+        norb_); 
+
+    timer_.acc_end("=> diff spin outer");
 
     C_ = Cnew;
 }
 
 /// apply TensorGPUs represending 1-body and 2-body spatial-orbital indexed operator
 /// as well as a constant to the current state 
-void FCIComputerGPU::apply_tensor_spat_012bdy(
+/// TODO: changing to be GPU implementation
+void FCIComputerGPU::apply_tensor_spat_012bdy_gpu(
     const std::complex<double> h0e,
     const TensorGPU& h1e, 
     const TensorGPU& h2e, 
-    const TensorGPU& h2e_einsum, 
+    TensorGPU& h2e_einsum, 
     size_t norb) 
 {
-    TensorGPU Cold = C_;
-    
-    apply_tensor_spat_12bdy(
+    gpu_error();
+
+    TensorGPU Cold({nalfa_strs_, nbeta_strs_}, "Cold", true, data_type_);
+    Cold.copy_in_gpu(C_);
+
+    apply_tensor_spat_12bdy_gpu(
         h1e,
         h2e,
         h2e_einsum,
@@ -440,7 +439,7 @@ void FCIComputerGPU::apply_array_1bdy_cpu(
     }
 }
 
-void FCIComputerGPU::lm_apply_array12_same_spin_opt_cpu(
+void FCIComputerGPU::lm_apply_array12_same_spin_opt_gpu(
     TensorGPU& out,
     const std::vector<int>& dexc,
     const int alpha_states,
@@ -451,49 +450,89 @@ void FCIComputerGPU::lm_apply_array12_same_spin_opt_cpu(
     const int norbs,
     const bool is_alpha)
 {
-    cpu_error();
+    timer_.acc_begin("==> same spin data transfer");
+
+    gpu_error();
 
     const int states1 = is_alpha ? alpha_states : beta_states;
     const int states2 = is_alpha ? beta_states : alpha_states;
     const int inc1 = is_alpha ? beta_states : 1;
     const int inc2 = is_alpha ? 1 : beta_states;
 
-    std::vector<std::complex<double>> temp(states1, 0.0);
+    // Transfer dexc to device
+    thrust::device_vector<int> d_dexc(dexc.begin(), dexc.end());
+    const int* d_dexc_ptr = thrust::raw_pointer_cast(d_dexc.data());
 
-    for (int s1 = 0; s1 < states1; ++s1) {
-        std::fill(temp.begin(), temp.end(), 0.0);
-        const int *cdexc = dexc.data() + 3 * s1 * ndexc;
-        const int *lim1 = cdexc + 3 * ndexc;
-        std::complex<double> *cout = out.data().data() + s1 * inc1;
+    timer_.acc_end("==> same spin data transfer");
 
-        for (; cdexc < lim1; cdexc = cdexc + 3) {
-            const int s2 = cdexc[0];
-            const int ijshift = cdexc[1];
-            const int parity1 = cdexc[2];
-            const int *cdexc2 = dexc.data() + 3 * s2 * ndexc;
-            const int *lim2 = cdexc2 + 3 * ndexc;
-            const int h2e_id = ijshift * norbs * norbs;
-            const std::complex<double> *h2etmp = h2e.read_h_data().data() + h2e_id;
-            temp[s2] += static_cast<double>(parity1) * h1e.read_h_data()[ijshift];
+    timer_.acc_begin("==> same spin kernel (CSR SpMM)");
 
-            for (; cdexc2 < lim2; cdexc2 += 3) {
-                const int target = cdexc2[0];
-                const int klshift = cdexc2[1];
-                const int parity = cdexc2[2] * parity1;
-                const std::complex<double> pref = static_cast<double>(parity) * h2etmp[klshift];
-                temp[target] += pref;
-            }
-        }
-        const std::complex<double> *xptr = C_.data().data();
-        for (int ii = 0; ii < states1; ii++) {
-            const std::complex<double> ttt = temp[ii];
-            math_zaxpy(states2, ttt, xptr, inc2, cout, inc2);
-            xptr += inc1;
-        }
+    if (data_type_ == "real") {
+        // Get device pointers for real data
+        double* d_out_real = thrust::raw_pointer_cast(out.d_re_data().data());
+        const double* d_C_real = thrust::raw_pointer_cast(C_.d_re_data().data());
+        const double* d_h1e_real = thrust::raw_pointer_cast(h1e.read_d_re_data().data());
+        const double* d_h2e_real = thrust::raw_pointer_cast(h2e.read_d_re_data().data());
+
+        lm_apply_array12_same_spin_spmm_csr_coalesced_wrapper_real(
+            d_out_real,
+            d_C_real,
+            d_dexc_ptr,
+            d_h1e_real,
+            d_h2e_real,
+            states1,
+            states2,
+            ndexc,
+            norbs,
+            inc1,
+            inc2);
+    } else if (data_type_ == "complex" && h2e.data_type() == "real") {
+        // Get device pointers for complex and real data
+        cuDoubleComplex* d_out = thrust::raw_pointer_cast(out.d_data().data());
+        const cuDoubleComplex* d_C = thrust::raw_pointer_cast(C_.d_data().data());
+        const double* d_h1e = thrust::raw_pointer_cast(h1e.read_d_re_data().data());
+        const double* d_h2e = thrust::raw_pointer_cast(h2e.read_d_re_data().data());
+
+        lm_apply_array12_same_spin_spmm_csr_coalesced_wrapper_mixed(
+            d_out,
+            d_C,
+            d_dexc_ptr,
+            d_h1e,
+            d_h2e,
+            states1,
+            states2,
+            ndexc,
+            norbs,
+            inc1,
+            inc2);
+    } else if (data_type_ == "complex" && h2e.data_type() == "complex") {
+        // Get device pointers for complex data
+        cuDoubleComplex* d_out = thrust::raw_pointer_cast(out.d_data().data());
+        const cuDoubleComplex* d_C = thrust::raw_pointer_cast(C_.d_data().data());
+        const cuDoubleComplex* d_h1e = thrust::raw_pointer_cast(h1e.read_d_data().data());
+        const cuDoubleComplex* d_h2e = thrust::raw_pointer_cast(h2e.read_d_data().data());
+
+        lm_apply_array12_same_spin_spmm_csr_coalesced_wrapper(
+            d_out,
+            d_C,
+            d_dexc_ptr,
+            d_h1e,
+            d_h2e,
+            states1,
+            states2,
+            ndexc,
+            norbs,
+            inc1,
+            inc2);
+    } else {
+        // Error handling for unsupported data types
+        throw std::runtime_error("Unsupported data type combination in lm_apply_array12_same_spin_opt_gpu");
     }
+
+    timer_.acc_end("==> same spin kernel (CSR SpMM)");
 }
 
-void FCIComputerGPU::lm_apply_array12_diff_spin_opt_cpu(
+void FCIComputerGPU::lm_apply_array12_diff_spin_opt_gpu(
     TensorGPU& out,
     const std::vector<int>& adexc,
     const std::vector<int>& bdexc,
@@ -501,80 +540,69 @@ void FCIComputerGPU::lm_apply_array12_diff_spin_opt_cpu(
     const int beta_states,
     const int nadexc,
     const int nbdexc,
-    const TensorGPU& h2e,
+    TensorGPU& h2e,
     const int norbs)
 {
-    cpu_error();
+    gpu_error();
 
-    const int nadexc_tot = alpha_states * nadexc;
-    const int norbs2 = norbs * norbs;
-    const int one = 1;
+    // Copy excitation tables to device
+    thrust::device_vector<int> d_adexc(adexc.begin(), adexc.end());
+    thrust::device_vector<int> d_bdexc(bdexc.begin(), bdexc.end());
 
-    std::vector<int> signs(nadexc_tot);
-    std::vector<int> coff(nadexc_tot);
-    std::vector<int> boff(nadexc_tot);
+    if (data_type_ == "real") {
+        // Get device pointers for real data
+        double* d_out_real = thrust::raw_pointer_cast(out.d_re_data().data());
+        const double* d_C_real = thrust::raw_pointer_cast(C_.d_re_data().data());
+        const double* d_h2e_real = thrust::raw_pointer_cast(h2e.d_re_data().data());
 
-    int nest = 0;
-    for (int s1 = 0; s1 < alpha_states; ++s1) {
-        for (int i = 0; i < nadexc; ++i) {
-            const int orbij = adexc[3 * (s1 * nadexc + i) + 1];
-            if (orbij == 0) ++nest;
-        }
-    }
+        lm_apply_array12_diff_spin_wrapper_real(
+            d_out_real,
+            d_C_real,
+            thrust::raw_pointer_cast(d_adexc.data()),
+            thrust::raw_pointer_cast(d_bdexc.data()),
+            d_h2e_real,
+            alpha_states,
+            beta_states,
+            nadexc,
+            nbdexc,
+            norbs);
+    } else if (data_type_ == "complex" && h2e.data_type() == "real") {
+        // Get device pointers for complex and real data
+        cuDoubleComplex* d_out = thrust::raw_pointer_cast(out.d_data().data());
+        const cuDoubleComplex* d_C = thrust::raw_pointer_cast(C_.d_data().data());
+        const double* d_h2e = thrust::raw_pointer_cast(h2e.d_re_data().data());
 
-    std::vector<std::complex<double>> vtemp(nest);
-    std::vector<std::complex<double>> ctemp(nest * alpha_states);
+        lm_apply_array12_diff_spin_wrapper_mixed(
+            d_out,
+            d_C,
+            thrust::raw_pointer_cast(d_adexc.data()),
+            thrust::raw_pointer_cast(d_bdexc.data()),
+            d_h2e,
+            alpha_states,
+            beta_states,
+            nadexc,
+            nbdexc,
+            norbs);
+    } else if (data_type_ == "complex" && h2e.data_type() == "complex") {
+        // Get device pointers for complex data
+        cuDoubleComplex* d_out = thrust::raw_pointer_cast(out.d_data().data());
+        const cuDoubleComplex* d_C = thrust::raw_pointer_cast(C_.d_data().data());
+        const cuDoubleComplex* d_h2e = thrust::raw_pointer_cast(h2e.d_data().data());
 
-    for (int orbid = 0; orbid < norbs2; ++orbid) {
-        int nsig = 0;
-        for (int s1 = 0; s1 < alpha_states; ++s1) {
-            for (int i = 0; i < nbdexc; ++i) {
-                const int orbij = adexc[3 * (s1 * nadexc + i) + 1];
-                if (orbij == orbid) {
-                    signs[nsig] = adexc[3 * (s1 * nadexc + i) + 2];
-                    coff[nsig] = adexc[3 * (s1 * nadexc + i)];
-                    boff[nsig] = s1;
-                    ++nsig;
-                }
-            }
-        }
-
-        std::fill(ctemp.begin(), ctemp.end(), std::complex<double>(0.0));
-
-        for (int isig = 0; isig < nsig; ++isig) {
-            const int offset = coff[isig];
-            const std::complex<double> *cptr = C_.data().data() + offset * beta_states;
-            std::complex<double> *tptr = ctemp.data() + isig;
-            const std::complex<double> zsign = signs[isig];
-            math_zaxpy(beta_states, zsign, cptr, one, tptr, nsig);
-        }
-
-        const std::complex<double> *tmperi = h2e.read_h_data().data() + orbid * norbs2;
-
-        for (int s2 = 0; s2 < beta_states; ++s2) {
-            
-            // TODO(Tyler): need for open mp
-            // const int ithrd = 0;
-            // const std::complex<double> *vpt = vtemp.data() + ithrd * nsig;
-            // for (int kk = 0; kk < nsig; ++kk) vpt[kk] = 0.0;
-
-            std::fill(vtemp.begin(), vtemp.begin() + nsig, std::complex<double>(0.0));
-            
-
-            for (int j = 0; j < nbdexc; ++j) {
-                int idx2 = bdexc[3 * (s2 * nbdexc + j)];
-                const int parity = bdexc[3 * (s2 * nbdexc + j) + 2];
-                const int orbkl = bdexc[3 * (s2 * nbdexc + j) + 1];
-                const std::complex<double> ttt = std::complex<double>(parity, 0.0) * tmperi[orbkl];
-                const std::complex<double> *cctmp = ctemp.data() + idx2 * nsig;
-                math_zaxpy(nsig, ttt, cctmp, one, vtemp.data(), one);
-            }
-
-            std::complex<double> *tmpout = out.data().data() + s2;
-            for (int isig = 0; isig < nsig; ++isig) {
-                tmpout[beta_states * boff[isig]] += vtemp[isig];
-            }
-        }
+        lm_apply_array12_diff_spin_wrapper(
+            d_out,
+            d_C,
+            thrust::raw_pointer_cast(d_adexc.data()),
+            thrust::raw_pointer_cast(d_bdexc.data()),
+            d_h2e,
+            alpha_states,
+            beta_states,
+            nadexc,
+            nbdexc,
+            norbs);
+    } else {
+        // Error handling for unsupported data types
+        throw std::runtime_error("Unsupported data type combination in lm_apply_array12_diff_spin_opt_gpu");
     }
 }
 
@@ -2580,12 +2608,12 @@ std::complex<double> FCIComputerGPU::get_exp_val_tensor_cpu(
     const std::complex<double> h0e, 
     const TensorGPU& h1e, 
     const TensorGPU& h2e, 
-    const TensorGPU& h2e_einsum, 
+    TensorGPU& h2e_einsum, 
     size_t norb)
 {
     TensorGPU Cin = C_;
 
-    apply_tensor_spat_012bdy(
+    apply_tensor_spat_012bdy_gpu(
         h0e,
         h1e, 
         h2e, 

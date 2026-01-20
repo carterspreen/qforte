@@ -95,6 +95,8 @@ if(ENABLE_CUDA)
       "${SOURCE_DIR}/fci_computer_gpu.cu"
       "${SOURCE_DIR}/fci_graph_gpu.cu"
       "${SOURCE_DIR}/sq_op_pool_gpu.cu"
+      "${SOURCE_DIR}/cublas_math.cu"
+      "${SOURCE_DIR}/tensor_gpu_kernels.cu"
   )
 else()
   set(CUDA_SOURCES "")
@@ -156,6 +158,8 @@ if(ENABLE_CUDA)
   )
   target_link_libraries(qforte_core PRIVATE
     CUDA::cudart
+    CUDA::cublas
+    CUDA::cusparse
     fmt-header-only
     ${OPENBLAS_EXE}
   )

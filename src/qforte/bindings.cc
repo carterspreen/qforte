@@ -337,7 +337,7 @@ PYBIND11_MODULE(qforte, m) {
             py::arg("antiherm") = false,
             py::arg("adjoint") = false
             )
-        .def("evolve_pool_trotter_not_inplace", &FCIComputer::evolve_pool_trotter_basic, 
+        .def("evolve_pool_trotter_basic_not_inplace", &FCIComputer::evolve_pool_trotter_basic, 
             py::arg("sqop"),
             py::arg("antiherm") = false,
             py::arg("adjoint") = false
@@ -529,13 +529,24 @@ PYBIND11_MODULE(qforte, m) {
              py::arg("shape"),
              py::arg("name") = "T",
              py::arg("on_gpu") = false)
+        .def(py::init<const std::vector<size_t>&, const std::string&, bool, const std::string&>(),
+             py::arg("shape"),
+             py::arg("name") = "T",
+             py::arg("on_gpu") = false,
+             py::arg("data_type") = "complex")
         .def("to_gpu", &TensorGPU::to_gpu)
         .def("to_cpu", &TensorGPU::to_cpu)
         .def("add", &TensorGPU::add, py::arg("other"))
         .def("zero", &TensorGPU::zero)
         .def("set", &TensorGPU::set, "idx"_a, "value"_a)
         .def("fill_from_nparray", &TensorGPU::fill_from_nparray, "array"_a, "shape"_a)
-        .def("__repr__", &TensorGPU::str);
+        .def("fill_from_tensor_cpu", &TensorGPU::fill_from_tensor_cpu, "other"_a, "shape"_a)
+        .def("__repr__", &TensorGPU::str,
+            py::arg("print_data") = true, 
+            py::arg("print_complex") = false, 
+            py::arg("maxcols") = 5,
+            py::arg("data_format") = "%12.7f",
+            py::arg("header_format") = "%12zu");
 
     py::class_<FCIComputerGPU>(m, "FCIComputerGPU")
         .def(py::init<int, int, int, bool, std::string>(), "nel"_a, "sz"_a, "norb"_a, "on_gpu"_a, "data_type"_a, "Make a FCIComputerGPU with nel, sz, and norb")
@@ -558,8 +569,8 @@ PYBIND11_MODULE(qforte, m) {
         .def("apply_tensor_spin_1bdy", &FCIComputerGPU::apply_tensor_spin_1bdy)
         // .def("apply_tensor_spin_12bdy", &FCIComputerGPU::apply_tensor_spin_12bdy)
         // .def("apply_tensor_spin_012bdy", &FCIComputerGPU::apply_tensor_spin_012bdy)
-        .def("apply_tensor_spat_12bdy", &FCIComputerGPU::apply_tensor_spat_12bdy)
-        .def("apply_tensor_spat_012bdy", &FCIComputerGPU::apply_tensor_spat_012bdy)
+        .def("apply_tensor_spat_12bdy_gpu", &FCIComputerGPU::apply_tensor_spat_12bdy_gpu)
+        .def("apply_tensor_spat_012bdy_gpu", &FCIComputerGPU::apply_tensor_spat_012bdy_gpu)
         .def("apply_individual_sqop_term_gpu", &FCIComputerGPU::apply_individual_sqop_term_gpu)
         .def("apply_sqop_gpu", &FCIComputerGPU::apply_sqop_gpu)
         .def("apply_diagonal_of_sqop_cpu", &FCIComputerGPU::apply_diagonal_of_sqop_cpu, 

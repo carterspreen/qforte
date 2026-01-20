@@ -401,6 +401,7 @@ void FCIComputer::apply_tensor_spat_12bdy(
     Tensor Cnew({nalfa_strs_, nbeta_strs_}, "Cnew");
     Cnew.zero();
 
+    timer_.acc_begin("=> same spin apply");
     lm_apply_array12_same_spin_opt(
         Cnew, 
         graph_.read_dexca_vec(), // dexca_tmp
@@ -411,9 +412,12 @@ void FCIComputer::apply_tensor_spat_12bdy(
         h2e,
         norb_,
         true);
+    timer_.acc_end("=> same spin apply");
 
-    Cnew.transpose();
+    ///TODO: Doesn't do anything... remove?
+    // Cnew.transpose();
         
+    timer_.acc_begin("=> same spin apply");
     lm_apply_array12_same_spin_opt(
         Cnew, 
         graph_.read_dexcb_vec(),
@@ -424,9 +428,11 @@ void FCIComputer::apply_tensor_spat_12bdy(
         h2e,
         norb_,
         false);
+    timer_.acc_end("=> same spin apply");
 
-    Cnew.transpose();
+    // Cnew.transpose();
 
+    timer_.acc_begin("=> diff spin apply");
     lm_apply_array12_diff_spin_opt(
         Cnew,
         graph_.read_dexca_vec(),
@@ -437,6 +443,7 @@ void FCIComputer::apply_tensor_spat_12bdy(
         graph_.get_ndexca(),
         h2e_einsum, 
         norb_); 
+    timer_.acc_end("=> diff spin apply");
 
     C_ = Cnew;
 }
@@ -595,6 +602,8 @@ void FCIComputer::lm_apply_array12_same_spin_opt(
     std::vector<std::complex<double>> temp(states1, 0.0);
 
     for (int s1 = 0; s1 < states1; ++s1) {
+        timer_.acc_begin("==> prepare temp");
+
         std::fill(temp.begin(), temp.end(), 0.0);
         const int *cdexc = dexc.data() + 3 * s1 * ndexc;
         const int *lim1 = cdexc + 3 * ndexc;
@@ -619,11 +628,15 @@ void FCIComputer::lm_apply_array12_same_spin_opt(
             }
         }
         const std::complex<double> *xptr = C_.data().data();
-        for (int ii = 0; ii < states1; ii++) {
+        timer_.acc_end("==> prepare temp");
+
+        timer_.acc_begin("==> zaxpy loop");
+        for (int ii = 0; ii < states1; ii++) { 
             const std::complex<double> ttt = temp[ii];
             math_zaxpy(states2, ttt, xptr, inc2, cout, inc2);
             xptr += inc1;
         }
+        timer_.acc_end("==> zaxpy loop");
     }
 }
 
@@ -646,6 +659,8 @@ void FCIComputer::lm_apply_array12_diff_spin_opt(
     std::vector<int> coff(nadexc_tot);
     std::vector<int> boff(nadexc_tot);
 
+    // here we are estimating the max number of participating excitations
+    // will not exceed the number of excitations for orbital 0
     int nest = 0;
     for (int s1 = 0; s1 < alpha_states; ++s1) {
         for (int i = 0; i < nadexc; ++i) {
@@ -655,56 +670,74 @@ void FCIComputer::lm_apply_array12_diff_spin_opt(
     }
 
     std::vector<std::complex<double>> vtemp(nest);
-    std::vector<std::complex<double>> ctemp(nest * alpha_states);
 
+    ///TODO: ask nick: why nest * alpha_states?
+    // probably bug -> should be nest * beta_states
+    // std::vector<std::complex<double>> ctemp(nest * alpha_states);
+
+    std::vector<std::complex<double>> ctemp(nest * beta_states); // matrix of rows that contribute to current orbid
+
+    // itterating over orbitals in the 2 body intergral
+    // -> this select a block of 2 body integrals to work with
+    // -> the block is norbs x norbs size
     for (int orbid = 0; orbid < norbs2; ++orbid) {
-        int nsig = 0;
-        for (int s1 = 0; s1 < alpha_states; ++s1) {
-            for (int i = 0; i < nbdexc; ++i) {
-                const int orbij = adexc[3 * (s1 * nadexc + i) + 1];
-                if (orbij == orbid) {
+
+        // find all excitations in adexc matrix that excite to orbid
+        // store their coff, boff, and sign in 1d arrays
+        int nsig = 0; // number of excitations found for current orbid
+        for (int s1 = 0; s1 < alpha_states; ++s1) { // over each row in adexc
+            
+            ///TODO: ask nick -> potential bug here
+            // why itterate over nbdexc? -> should be nadexc, that is what fqe has
+            // for (int i = 0; i < nbdexc; ++i) {
+
+            for (int i = 0; i < nadexc; ++i) {  // now itterating over each excitation in that row
+                const int orbij = adexc[3 * (s1 * nadexc + i) + 1]; // 2nd element of tuple -> excited orbital
+                if (orbij == orbid) { // only care about excitations to current orbital
                     signs[nsig] = adexc[3 * (s1 * nadexc + i) + 2];
                     coff[nsig] = adexc[3 * (s1 * nadexc + i)];
                     boff[nsig] = s1;
                     ++nsig;
                 }
             }
-        }
+        } 
+        // finished filling coff, boff, signs for current orbid
 
         std::fill(ctemp.begin(), ctemp.end(), std::complex<double>(0.0));
 
+        // loop over each excitation found for current orbid
+        // and build a small matrix of rows from C_ that contribute
         for (int isig = 0; isig < nsig; ++isig) {
-            const int offset = coff[isig];
-            const std::complex<double> *cptr = C_.data().data() + offset * beta_states;
+            const int offset = coff[isig]; // which row in C_ to use
+            const std::complex<double> *cptr = C_.data().data() + offset * beta_states; // pointer to that row
             std::complex<double> *tptr = ctemp.data() + isig;
             const std::complex<double> zsign = signs[isig];
-            math_zaxpy(beta_states, zsign, cptr, one, tptr, nsig);
+            math_zaxpy(beta_states, zsign, cptr, one, tptr, nsig); // store sign * C_ row in ctemp matrix
         }
+        // finished building ctemp matrix for current orbid
 
+        // pointer to start of block of 2 body integrals for current orbid
         const std::complex<double> *tmperi = h2e.read_data().data() + orbid * norbs2;
 
+        // loop over each row in bdexc
         for (int s2 = 0; s2 < beta_states; ++s2) {
-            
-            // TODO(Tyler): need for open mp
-            // const int ithrd = 0;
-            // const std::complex<double> *vpt = vtemp.data() + ithrd * nsig;
-            // for (int kk = 0; kk < nsig; ++kk) vpt[kk] = 0.0;
 
             std::fill(vtemp.begin(), vtemp.begin() + nsig, std::complex<double>(0.0));
-            
 
+            // loop over each beta excitation -> each element of current row in bdexc
             for (int j = 0; j < nbdexc; ++j) {
-                int idx2 = bdexc[3 * (s2 * nbdexc + j)];
-                const int parity = bdexc[3 * (s2 * nbdexc + j) + 2];
-                const int orbkl = bdexc[3 * (s2 * nbdexc + j) + 1];
-                const std::complex<double> ttt = std::complex<double>(parity, 0.0) * tmperi[orbkl];
-                const std::complex<double> *cctmp = ctemp.data() + idx2 * nsig;
-                math_zaxpy(nsig, ttt, cctmp, one, vtemp.data(), one);
+                int idx2 = bdexc[3 * (s2 * nbdexc + j)]; // column index in ctemp matrix ctemp[nsig][beta_states]
+                const int parity = bdexc[3 * (s2 * nbdexc + j) + 2]; // sign of excitation
+                const int orbkl = bdexc[3 * (s2 * nbdexc + j) + 1]; // idx in 2 body integral block
+                const std::complex<double> ttt = std::complex<double>(parity, 0.0) * tmperi[orbkl]; // weight = parity * h2e(orbid, orbkl)
+                const std::complex<double> *cctmp = ctemp.data() + idx2 * nsig; // pointer to column at idx2 of ctemp (column-major: each column contiguous)
+                math_zaxpy(nsig, ttt, cctmp, one, vtemp.data(), one); // vtemp[isig] += ttt * ctemp[isig][idx2]
             }
+            // finished building vtemp column vector for current s2
 
-            std::complex<double> *tmpout = out.data().data() + s2;
+            std::complex<double> *tmpout = out.data().data() + s2; // column of out to update
             for (int isig = 0; isig < nsig; ++isig) {
-                tmpout[beta_states * boff[isig]] += vtemp[isig];
+                tmpout[beta_states * boff[isig]] += vtemp[isig]; // out[boff[isig]][s2] += vtemp[isig]
             }
         }
     }

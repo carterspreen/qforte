@@ -123,6 +123,9 @@ void ndim_error(size_t) const;
 
 void fill_from_nparray(std::vector<std::complex<double>>, std::vector<size_t>);
 
+// fill data from the cpu tensor
+void fill_from_tensor_cpu(const Tensor&, std::vector<size_t>);
+
 std::string str(
     bool print_data = true,
     bool print_complex = false,
@@ -273,6 +276,10 @@ std::complex<double> vector_dot(const TensorGPU& other) const;
  * Throw if not 2 ndim
  **/
 TensorGPU transpose() const;
+
+TensorGPU transpose_gpu() const;
+
+void fineGrainedTranspose();
 
 /**
  * Compute a new copy of this Tensor which is a transpose of this.
