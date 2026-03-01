@@ -211,6 +211,9 @@ class SQOpPoolGPU {
     /// builds the sq operator pool
     void fill_pool(std::string pool_type);
 
+    /// builds the sq operator pool kUpG style
+    void fill_pool_kUpCCGSD(int kmax);
+
     /// return a vector of string representing this sq operator pool
     std::string str() const;
 

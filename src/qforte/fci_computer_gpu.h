@@ -80,6 +80,9 @@ class FCIComputerGPU {
             const std::complex<double> val
             );
 
+    /// Set a particular element of this TensorGPU, specified by idxs
+    std::complex<double> get_element(const std::vector<size_t>& idxs);
+
     void cpu_error() const;
 
     void gpu_error() const;
@@ -108,19 +111,19 @@ class FCIComputerGPU {
       size_t norb);
 
     /// apply TensorGPUs represending 1-body and 2-body spatial-orbital indexed operator to the current state 
-    void apply_tensor_spat_12bdy(
+    void apply_tensor_spat_12bdy_gpu(
       const TensorGPU& h1e, 
       const TensorGPU& h2e, 
-      const TensorGPU& h2e_einsum, 
+      TensorGPU& h2e_einsum, 
       size_t norb);
 
     /// apply TensorGPUs represending 1-body and 2-body spatial-orbital indexed operator
     /// as well as a constant to the current state 
-    void apply_tensor_spat_012bdy(
+    void apply_tensor_spat_012bdy_gpu(
       const std::complex<double> h0e,
       const TensorGPU& h1e, 
       const TensorGPU& h2e, 
-      const TensorGPU& h2e_einsum, 
+      TensorGPU& h2e_einsum, 
       size_t norb);
 
     void lm_apply_array1(
@@ -143,7 +146,7 @@ class FCIComputerGPU {
       const int norbs,
       const bool is_alpha);
 
-    void lm_apply_array12_same_spin_opt_cpu(
+    void lm_apply_array12_same_spin_opt_gpu(
       TensorGPU& out,
       const std::vector<int>& dexc,
       const int alpha_states,
@@ -154,7 +157,7 @@ class FCIComputerGPU {
       const int norbs,
       const bool is_alpha); 
 
-    void lm_apply_array12_diff_spin_opt_cpu(
+    void lm_apply_array12_diff_spin_opt_gpu(
       TensorGPU& out,
       const std::vector<int>& adexc,
       const std::vector<int>& bdexc,
@@ -162,8 +165,19 @@ class FCIComputerGPU {
       const int beta_states,
       const int nadexc,
       const int nbdexc,
-      const TensorGPU& h2e,
+      TensorGPU& h2e,
       const int norbs); 
+
+    void lm_apply_array12_diff_spin_opt_gpu_v2(
+      TensorGPU& out,
+      const std::vector<int>& adexc,
+      const std::vector<int>& bdexc,
+      const int alpha_states,
+      const int beta_states,
+      const int nadexc,
+      const int nbdexc,
+      TensorGPU& h2e,
+      const int norbs);
 
     std::pair<TensorGPU, TensorGPU> calculate_dvec_spin_with_coeff();
 
@@ -313,14 +327,18 @@ class FCIComputerGPU {
 
     std::complex<double> get_exp_val_cpu(const SQOperator& sqop);
 
+    /// GPU only version.
+    std::complex<double> get_exp_val(const SQOperator& sqop);
+
     std::complex<double> get_exp_val_tensor_cpu(
       const std::complex<double> h0e, 
       const TensorGPU& h1e, 
       const TensorGPU& h2e, 
-      const TensorGPU& h2e_einsum, 
+      TensorGPU& h2e_einsum, 
       size_t norb);  
 
-    void scale_cpu(const std::complex<double> a);
+    // scale on CPU or GPU (safe for either I think)
+    void scale(const std::complex<double> a);
 
     std::vector<double> direct_expectation_value(const TensorOperator& top);
 
@@ -377,6 +395,10 @@ class FCIComputerGPU {
     void zero_cpu();
 
     void hartree_fock_cpu();
+
+    size_t get_Na() { return nalfa_strs_; }
+
+    size_t get_Nb() { return nbeta_strs_; }
 
     void print_vector(const std::vector<int>& vec, const std::string& name);
 

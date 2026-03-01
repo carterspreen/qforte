@@ -1,7 +1,19 @@
 import qforte as qf
 import numpy as np
+import psi4
  
 import time
+
+import os
+os.environ["OMP_NUM_THREADS"] = "16"
+os.environ["OMP_DYNAMIC"] = "FALSE"
+os.environ["OMP_PROC_BIND"] = "true"
+os.environ["OMP_PLACES"] = "cores"
+
+print("PY sees OMP_NUM_THREADS =", os.environ.get("OMP_NUM_THREADS"))
+print("PY sees OMP_DYNAMIC =", os.environ.get("OMP_DYNAMIC"))
+print("PY sees OMP_PROC_BIND =", os.environ.get("OMP_PROC_BIND"))
+print("PY sees OMP_PLACES =", os.environ.get("OMP_PLACES"))
 
 # Define the reference and geometry lists.
 geom = [
@@ -16,7 +28,11 @@ geom = [
     ('H', (0., 0., 9.0)), 
     ('H', (0., 0.,10.0)),
     ('H', (0., 0.,11.0)), 
-    ('H', (0., 0.,12.0))
+    ('H', (0., 0.,12.0)),
+    ('H', (0., 0.,13.0)),
+    ('H', (0., 0.,14.0)),
+    # ('H', (0., 0.,15.0)),
+    # ('H', (0., 0.,16.0)),
     ]
 
 # Get the molecule object that now contains both the fermionic and qubit Hamiltonians.
@@ -55,9 +71,11 @@ timer = qf.local_timer()
 
 fci_comp1 = qf.FCIComputer(nel=nel, sz=sz, norb=norb)
 fqe_comp1 = qf.FQEComputer(nel=nel, sz=sz, norb=norb)
+fci_comp_gpu = qf.FCIComputerGPU(nel=nel, sz=sz, norb=norb, on_gpu=False, data_type="complex")
 
 fci_comp1.hartree_fock()
 fqe_comp1.hartree_fock()
+fci_comp_gpu.hartree_fock_cpu()
 
 sqham = mol.sq_hamiltonian
 
@@ -65,10 +83,10 @@ hermitian_pairs = qf.SQOpPool()
 hermitian_pairs.add_hermitian_pairs(1.0, sqham)
 
 time = 0.1
-r = 3
-order = 2
+r = 1
+order = 1
 
-N = 4
+N = 1
 
 ah = False
 adj = True
@@ -83,9 +101,14 @@ print(f" adjoint:   {adj}")
 print("\n")
 
 app_sqop = False
-app_tens = True
+app_tens = False
 app_exact_evo = False
-app_trot = False
+app_trot = True
+
+# Psi4 clamps num threads to 1 even for fqe precesses
+# if this is not explicitally set here!
+# import psi4
+# psi4.set_num_threads(1)
 
 
 
@@ -112,14 +135,37 @@ if(app_tens):
     fci_comp1.hartree_fock()
     fqe_comp1.hartree_fock()
 
+    mo_oeis_gpu = qf.TensorGPU(mol.mo_oeis.shape(), "mo_oeis_gpu", False)
+    mo_teis_gpu = qf.TensorGPU(mol.mo_teis.shape(), "mo_teis_gpu", False)
+    mo_teis_einsum_gpu = qf.TensorGPU(mol.mo_teis_einsum.shape(), "mo_teis_einsum_gpu", False)
+    mo_oeis_gpu.fill_from_tensor_cpu(mol.mo_oeis, mol.mo_oeis.shape())
+    mo_teis_gpu.fill_from_tensor_cpu(mol.mo_teis, mol.mo_teis.shape())
+    mo_teis_einsum_gpu.fill_from_tensor_cpu(mol.mo_teis_einsum, mol.mo_teis_einsum.shape())
+
+    mo_oeis_gpu.to_gpu()
+    mo_teis_gpu.to_gpu()
+    mo_teis_einsum_gpu.to_gpu()
+    fci_comp_gpu.to_gpu()
+
     timer.reset()
-    fci_comp1.apply_tensor_spat_012bdy(
+    fci_comp_gpu.apply_tensor_spat_012bdy_gpu(
         mol.nuclear_repulsion_energy, 
-        mol.mo_oeis, 
-        mol.mo_teis, 
-        mol.mo_teis_einsum, 
+        mo_oeis_gpu, 
+        mo_teis_gpu, 
+        mo_teis_einsum_gpu, 
         norb)
-    timer.record('FCI apply tensor')
+    timer.record('FCI GPU apply tensor')
+
+    # timer.reset()
+    # fci_comp1.apply_tensor_spat_012bdy(
+    #     mol.nuclear_repulsion_energy, 
+    #     mol.mo_oeis, 
+    #     mol.mo_teis, 
+    #     mol.mo_teis_einsum, 
+    #     norb)
+    # timer.record('FCI apply tensor')
+
+    psi4.core.set_num_threads(20)
 
     timer.reset()
     fqe_comp1.apply_tensor_spat_012bdy(
@@ -128,8 +174,12 @@ if(app_tens):
         mol.mo_teis_np)
     timer.record('FQE apply tensor')
 
+    Cfqe = fqe_comp1.get_state_deep()
     Cfci = fci_comp1.get_state_deep()
-    print(f"\n |dC| apply tensor: {fqe_comp1.get_tensor_diff(Cfci)} \n")
+    fci_comp_gpu.to_cpu()
+    Cfci_gpu = qf.Tensor(Cfci.shape(), "Cfci_gpu")
+    fci_comp_gpu.copy_to_tensor_cpu(Cfci_gpu)
+    print(f"\n |dC| apply tensor: {fqe_comp1.get_tensor_diff(Cfci_gpu)} \n")
 
     # print(fci_comp1)
     # print(fqe_comp1)
@@ -180,55 +230,57 @@ if(app_exact_evo):
 # ===> evovle pool trotter <====
 
 if(app_trot):
-    fci_comp1.hartree_fock()
-    fqe_comp1.hartree_fock()
+    psi4.core.set_num_threads(20)
 
-    timer.reset()
+    # fci_comp1.hartree_fock()
+    # fqe_comp1.hartree_fock()
 
-    fci_comp1.evolve_pool_trotter_not_inplace(
-        hermitian_pairs,
-        time,
-        r,
-        order,
-        antiherm=ah,
-        adjoint=adj)
+    # timer.reset()
 
-    timer.record(f"FCI Trotter step")
+    # fci_comp1.evolve_pool_trotter_not_inplace(
+    #     hermitian_pairs,
+    #     time,
+    #     r,
+    #     order,
+    #     antiherm=ah,
+    #     adjoint=adj)
 
-    Cfci1 = fci_comp1.get_state_deep()
-    print(f"\n |Cfci| evolve sqop: {Cfci1.norm()} \n")
+    # timer.record(f"FCI Trotter step")
 
-    fci_comp1.hartree_fock()
-    fqe_comp1.hartree_fock()
+    # Cfci1 = fci_comp1.get_state_deep()
+    # print(f"\n |Cfci| evolve sqop: {Cfci1.norm()} \n")
 
-    timer.reset()
+    # fci_comp1.hartree_fock()
+    # fqe_comp1.hartree_fock()
 
-    fci_comp1.evolve_pool_trotter(
-        hermitian_pairs,
-        time,
-        r,
-        order,
-        antiherm=ah,
-        adjoint=adj)
+    # timer.reset()
 
-    timer.record(f"FCI Trotter step inplace")
+    # fci_comp1.evolve_pool_trotter(
+    #     hermitian_pairs,
+    #     time,
+    #     r,
+    #     order,
+    #     antiherm=ah,
+    #     adjoint=adj)
 
-    timer.reset()
+    # timer.record(f"FCI Trotter step inplace")
 
-    fqe_comp1.evolve_pool_trotter(
-        hermitian_pairs,
-        time,
-        r,
-        order,
-        antiherm=ah,
-        adjoint=adj)
+    # timer.reset()
 
-    timer.record(f"FQE Trotter step")
+    # fqe_comp1.evolve_pool_trotter(
+    #     hermitian_pairs,
+    #     time,
+    #     r,
+    #     order,
+    #     antiherm=ah,
+    #     adjoint=adj)
 
-    Cfci2 = fci_comp1.get_state_deep()
-    print(f"\n |Cfqe| evolve sqop: {Cfci2.norm()} \n")
-    print(f"\n |dC1| evolve sqop: {fqe_comp1.get_tensor_diff(Cfci1)} \n")
-    print(f"\n |dC2| evolve sqop: {fqe_comp1.get_tensor_diff(Cfci2)} \n")
+    # timer.record(f"FQE Trotter step")
+
+    # Cfci2 = fci_comp1.get_state_deep()
+    # print(f"\n |Cfqe| evolve sqop: {Cfci2.norm()} \n")
+    # print(f"\n |dC1| evolve sqop: {fqe_comp1.get_tensor_diff(Cfci1)} \n")
+    # print(f"\n |dC2| evolve sqop: {fqe_comp1.get_tensor_diff(Cfci2)} \n")
 
 
     # ===> evovle pool basic <====
@@ -261,6 +313,12 @@ if(app_trot):
         sd_pool,
         antiherm=ah,
         adjoint=adj)
+    
+    # fci_comp1.evolve_pool_trotter_basic_not_inplace(
+    #     sd_pool,
+    #     antiherm=ah,
+    #     adjoint=adj)
+
 
     timer.record(f"FCI Trotter basic inplace")
 

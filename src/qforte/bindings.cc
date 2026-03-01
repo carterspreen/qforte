@@ -197,6 +197,7 @@ PYBIND11_MODULE(qforte, m) {
         .def("get_qubit_operator", &SQOpPoolGPU::get_qubit_operator, py::arg("order_type"),
              py::arg("combine_like_terms") = true, py::arg("qubit_excitations") = false)
         .def("fill_pool", &SQOpPoolGPU::fill_pool)
+        .def("fill_pool_kUpCCGSD", &SQOpPoolGPU::fill_pool_kUpCCGSD)
         .def("check_mu_tuple_container_sizes", &SQOpPoolGPU::check_mu_tuple_container_sizes)
         .def("print_mu_tuple_dims", &SQOpPoolGPU::print_mu_tuple_dims)
         .def("print_mu_tuple_elements", &SQOpPoolGPU::print_mu_tuple_elements)
@@ -338,7 +339,7 @@ PYBIND11_MODULE(qforte, m) {
             py::arg("antiherm") = false,
             py::arg("adjoint") = false
             )
-        .def("evolve_pool_trotter_not_inplace", &FCIComputer::evolve_pool_trotter_basic, 
+        .def("evolve_pool_trotter_basic_not_inplace", &FCIComputer::evolve_pool_trotter_basic, 
             py::arg("sqop"),
             py::arg("antiherm") = false,
             py::arg("adjoint") = false
@@ -391,6 +392,10 @@ PYBIND11_MODULE(qforte, m) {
         .def("get_bstr", &FCIGraph::get_bstr)
         .def("get_aind", &FCIGraph::get_aind)
         .def("get_bind", &FCIGraph::get_bind)
+        .def("get_astr_at_idx", &FCIGraph::get_astr_at_idx)
+        .def("get_bstr_at_idx", &FCIGraph::get_bstr_at_idx)
+        .def("get_aind_for_str", &FCIGraph::get_aind_for_str)
+        .def("get_bind_for_str", &FCIGraph::get_bind_for_str)
         .def("get_alfa_map", &FCIGraph::get_alfa_map)
         .def("get_beta_map", &FCIGraph::get_beta_map)
         .def("get_dexca", &FCIGraph::get_dexca)
@@ -511,6 +516,8 @@ PYBIND11_MODULE(qforte, m) {
         .def("reset", &local_timer::reset)
         .def("get", &local_timer::get)
         .def("record", &local_timer::record)
+        .def("acc_begin", &local_timer::acc_begin)
+        .def("acc_end", &local_timer::acc_end)
         .def("get_timings", &local_timer::get_timings)
         .def("get_acc_timings", &local_timer::get_acc_timings)
         .def("accumulate", &local_timer::accumulate, "Accumulate the elapsed time for a specific task.")
@@ -524,31 +531,48 @@ PYBIND11_MODULE(qforte, m) {
              py::arg("shape"),
              py::arg("name") = "T",
              py::arg("on_gpu") = false)
+        .def(py::init<const std::vector<size_t>&, const std::string&, bool, const std::string&>(),
+             py::arg("shape"),
+             py::arg("name") = "T",
+             py::arg("on_gpu") = false,
+             py::arg("data_type") = "complex")
         .def("to_gpu", &TensorGPU::to_gpu)
         .def("to_cpu", &TensorGPU::to_cpu)
         .def("add", &TensorGPU::add, py::arg("other"))
         .def("zero", &TensorGPU::zero)
         .def("set", &TensorGPU::set, "idx"_a, "value"_a)
         .def("fill_from_nparray", &TensorGPU::fill_from_nparray, "array"_a, "shape"_a)
-        .def("__repr__", &TensorGPU::str);
+        .def("fill_from_tensor_cpu", &TensorGPU::fill_from_tensor_cpu, "other"_a, "shape"_a)
+        .def("__repr__", &TensorGPU::str,
+            py::arg("print_data") = true, 
+            py::arg("print_complex") = false, 
+            py::arg("maxcols") = 5,
+            py::arg("data_format") = "%12.7f",
+            py::arg("header_format") = "%12zu");
 
     py::class_<FCIComputerGPU>(m, "FCIComputerGPU")
         .def(py::init<int, int, int, bool, std::string>(), "nel"_a, "sz"_a, "norb"_a, "on_gpu"_a, "data_type"_a, "Make a FCIComputerGPU with nel, sz, and norb")
         .def("hartree_fock_cpu", &FCIComputerGPU::hartree_fock_cpu)
         .def("get_hf_dot", &FCIComputerGPU::get_hf_dot)
         .def("set_element", &FCIComputerGPU::set_element)
+        .def("get_element", &FCIComputerGPU::get_element)
         .def("to_gpu", &FCIComputerGPU::to_gpu)
         .def("to_cpu", &FCIComputerGPU::to_cpu)
+        .def("gpu_error", &FCIComputerGPU::gpu_error)
+        .def("cpu_error", &FCIComputerGPU::cpu_error)
         .def("copy_to_tensor_cpu", &FCIComputerGPU::copy_to_tensor_cpu)
         .def("get_acc_timer", &FCIComputerGPU::get_acc_timer)
+        .def("get_Na", &FCIComputerGPU::get_Na)
+        .def("get_Nb", &FCIComputerGPU::get_Nb)
         .def("set_state_cpu", &FCIComputerGPU::set_state_cpu)
         .def("set_state_gpu", &FCIComputerGPU::set_state_gpu)
         .def("set_state_from_tensor_cpu", &FCIComputerGPU::set_state_from_tensor_cpu)
+        .def("scale", &FCIComputerGPU::scale)
         .def("apply_tensor_spin_1bdy", &FCIComputerGPU::apply_tensor_spin_1bdy)
         // .def("apply_tensor_spin_12bdy", &FCIComputerGPU::apply_tensor_spin_12bdy)
         // .def("apply_tensor_spin_012bdy", &FCIComputerGPU::apply_tensor_spin_012bdy)
-        .def("apply_tensor_spat_12bdy", &FCIComputerGPU::apply_tensor_spat_12bdy)
-        .def("apply_tensor_spat_012bdy", &FCIComputerGPU::apply_tensor_spat_012bdy)
+        .def("apply_tensor_spat_12bdy_gpu", &FCIComputerGPU::apply_tensor_spat_12bdy_gpu)
+        .def("apply_tensor_spat_012bdy_gpu", &FCIComputerGPU::apply_tensor_spat_012bdy_gpu)
         .def("apply_individual_sqop_term_gpu", &FCIComputerGPU::apply_individual_sqop_term_gpu)
         .def("apply_sqop_gpu", &FCIComputerGPU::apply_sqop_gpu)
         .def("apply_diagonal_of_sqop_cpu", &FCIComputerGPU::apply_diagonal_of_sqop_cpu, 
@@ -557,6 +581,7 @@ PYBIND11_MODULE(qforte, m) {
             )
         .def("apply_sqop_pool_cpu", &FCIComputerGPU::apply_sqop_pool_cpu)
         .def("get_exp_val_cpu", &FCIComputerGPU::get_exp_val_cpu)
+        .def("get_exp_val", &FCIComputerGPU::get_exp_val)
         .def("get_exp_val_tensor_cpu", &FCIComputerGPU::get_exp_val_tensor_cpu)
         .def("evolve_op_taylor_cpu", &FCIComputerGPU::evolve_op_taylor_cpu)
         .def("apply_sqop_evolution_gpu", &FCIComputerGPU::apply_sqop_evolution_gpu, 

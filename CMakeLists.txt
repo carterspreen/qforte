@@ -14,7 +14,8 @@ if(ENABLE_CUDA)
   # Use the toolkit from the current conda env and target your GPU (RTX 3060 = 86)
   # (FORCE clears stale cache values so old arch lists like 70/61/52 don't sneak back in.)
   set(CUDAToolkit_ROOT "$ENV{CONDA_PREFIX}")
-  set(CMAKE_CUDA_ARCHITECTURES "86" CACHE STRING "" FORCE)
+  # set(CMAKE_CUDA_ARCHITECTURES "86" CACHE STRING "" FORCE)
+  set(CMAKE_CUDA_ARCHITECTURES "native" CACHE STRING "" FORCE)
   message(STATUS "CUDA support is ENABLED")
   message(STATUS "Using CUDA archs: ${CMAKE_CUDA_ARCHITECTURES}")
   
@@ -37,7 +38,8 @@ set(BLA_VENDOR "Generic")             # bypass FindBLAS vendor picks
 
 # (Nick) kept as-is so CMake finds headers/libs inside the env.
 # set(CMAKE_PREFIX_PATH "/home/nstair/anaconda3/envs/cuqf_8_25_25_v2")
-set(CMAKE_PREFIX_PATH "/home/zach_gonzales/anaconda3/envs/qforte")
+# set(CMAKE_PREFIX_PATH "/home/zach_gonzales/anaconda3/envs/qforte")
+set(CMAKE_PREFIX_PATH "/home/nstair/anaconda3/envs/qf-cusv1")
 
 set(BLAS_LIBRARIES "${CMAKE_PREFIX_PATH}/lib")
 set(CBLAS_INCLUDE_DIR "${CMAKE_PREFIX_PATH}/include")         # need
@@ -55,7 +57,9 @@ if(ENABLE_CUDA)
   # -------------------------------------------------------------------
   # Locate Thrust/CUB (handles both NVIDIA "cccl" layout and conda-forge)
   # -------------------------------------------------------------------
-  set(_CUDA_TGT_INC "$ENV{CONDA_PREFIX}/targets/x86_64-linux/include")
+
+  set(_CUDA_TGT_INC "$ENV{CONDA_PREFIX}/targets/sbsa-linux/include")
+  # set(_CUDA_TGT_INC "$ENV{CONDA_PREFIX}/targets/x86_64-linux/include")
   set(_CUDA_INC     "$ENV{CONDA_PREFIX}/include")
 
   if (EXISTS "${_CUDA_TGT_INC}/thrust/host_vector.h")
@@ -91,6 +95,8 @@ if(ENABLE_CUDA)
       "${SOURCE_DIR}/fci_computer_gpu.cu"
       "${SOURCE_DIR}/fci_graph_gpu.cu"
       "${SOURCE_DIR}/sq_op_pool_gpu.cu"
+      "${SOURCE_DIR}/cublas_math.cu"
+      "${SOURCE_DIR}/tensor_gpu_kernels.cu"
   )
 else()
   set(CUDA_SOURCES "")
@@ -152,6 +158,8 @@ if(ENABLE_CUDA)
   )
   target_link_libraries(qforte_core PRIVATE
     CUDA::cudart
+    CUDA::cublas
+    CUDA::cusparse
     fmt-header-only
     ${OPENBLAS_EXE}
   )
