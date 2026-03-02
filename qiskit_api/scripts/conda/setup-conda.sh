@@ -27,8 +27,8 @@ fi
 
 #DELETE ENV IF IT ALREADY EXISTS
 if conda env list | awk '{print $1}' | grep -Fxq $SETUP_ENV; then
-    conda env remove -n "$SETUP_ENV"
+    conda env remove -n "$SETUP_ENV" -y
 fi
 
 #CREATE CONDA ENV
-conda create -n "$SETUP_ENV" -c conda-forge python=$PYTHON_VERSION $QFORTE_PACKAGES $QISKIT_PACKAGES
+conda create -n "$SETUP_ENV" -y -c conda-forge python=$PYTHON_VERSION $QFORTE_PACKAGES $QISKIT_PACKAGES
