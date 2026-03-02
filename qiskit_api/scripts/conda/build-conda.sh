@@ -24,7 +24,7 @@ conda --version > /dev/null 2>&1 || { echo "conda not found"; exit 1;}
 #INITIALIZE CONDA
 source "$(conda info --base)/etc/profile.d/conda.sh"
 
-#SELECT MICROMAMBA ENV
+#SELECT CONDA ENV
 if [ $# -gt 0 ]; then
     BUILD_ENV=$1
 elif [[ -v CONDA_DEFAULT_ENV ]]; then
