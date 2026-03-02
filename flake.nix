@@ -30,11 +30,11 @@
         packages = with pkgs; [
 
           #fetchers
-          nix
-          git
 
           #classic cli tools
+          git
           vim
+          tmux
           tree
 
           #modern cli tools
@@ -117,27 +117,89 @@
                 micromamba
               ];
 
-            #fhs command (starts zsh with micromamba env initialized)
-            runScript = ''
-              zsh -c "$(cat <<'EOF'
-              echo 'eval "$(micromamba shell hook --shell=zsh)" && micromamba activate ${mambaEnv}' > /etc/zprofile
-              zsh --login
-              EOF
-              )"
-            '';
 
-            #fhs profile (creates micromamba env if nonexistent)
-            profile = ''
-              set -e
-              eval "$(micromamba shell hook --shell=posix)"
-              export MAMBA_ROOT_PREFIX="${mambaRootPrefix}"
-              if [ ! -d "$MAMBA_ROOT_PREFIX" ]; then
-                mkdir -p "$MAMBA_ROOT_PREFIX"
+            #fhs command (starts zsh with micromamba env initialized)
+            runScript = pkgs.writeShellScript "startDevShell" ''
+
+              set -euo pipefail
+                
+              #add host nix to path
+              for p in "/nix/var/nix/profiles/default/bin" "$HOME/.nix-profile/bin"; do
+                if [ -x "$p/nix" ]; then
+                    export PATH="$p:$PATH"
+                    break
+                fi
+              done
+
+              #save zsh config location
+              if [[ -v ZDOTDIR ]]; then
+                  real_zdotdir=$ZDOTDIR
+              else
+                  real_zdotdir=""
               fi
-              if [ ! -d "$MAMBA_ROOT_PREFIX/envs/${mambaEnv}" ]; then
-                micromamba create -n ${mambaEnv} -y -c conda-forge ${pythonVer} ${pythonPkgs}
-              fi
+
+              #make a temporary directory for the zsh wrapper
+              wrapper="$(mktemp -d)"
+              trap 'rm -rf $wrapper' EXIT INT TERM
+
+              #wrapper script (runs before host .zshenv)
+              cat > $wrapper/.zshenv << EOF
+
+                #initialize micromamba
+                export MAMBA_ROOT_PREFIX="${mambaRootPrefix}"
+                if micromamba --version >/dev/null 2>&1; then
+                    eval "\$(micromamba shell hook --shell=zsh)"
+                    if [ ! -d "\$MAMBA_ROOT_PREFIX" ]; then
+                      mkdir -p "\$MAMBA_ROOT_PREFIX"
+                    fi
+                    if [ ! -d "\$MAMBA_ROOT_PREFIX/envs/${mambaEnv}" ]; then
+                      micromamba create -n ${mambaEnv} -y -c conda-forge ${pythonVer} ${pythonPkgs}
+                    fi
+                    micromamba activate ${mambaEnv}
+                fi
+
+                #restore saved zsh config location
+                real_zdotdir=$real_zdotdir
+                if [[ -z "\$real_zdotdir" ]]; then
+                    unset ZDOTDIR
+                    if [ -r "\$HOME/.zshenv" ]; then
+                        source "\$HOME/.zshenv"
+                    fi
+                else
+                    export ZDOTDIR=\$real_zdotdir
+                    if [ -r "\$real_zdotdir/.zshenv" ]; then
+                        source "\$real_zdotdir/.zshenv"
+                    fi
+                fi
+
+              EOF
+
+              #run zsh with the wrapper script
+              export ZDOTDIR="$wrapper"
+              exec zsh --login
+
             '';
+            #fhs command (starts zsh with micromamba env initialized)
+            #runScript = ''
+            #  zsh -c "$(cat <<'EOF'
+            #  echo 'eval "$(micromamba shell hook --shell=zsh)" && micromamba activate ${mambaEnv}' > /etc/zprofile
+            #  zsh --login
+            #  EOF
+            #  )"
+            #'';
+
+            ##fhs profile (creates micromamba env if nonexistent)
+            #profile = ''
+            #  set -e
+            #  eval "$(micromamba shell hook --shell=posix)"
+            #  export MAMBA_ROOT_PREFIX="${mambaRootPrefix}"
+            #  if [ ! -d "$MAMBA_ROOT_PREFIX" ]; then
+            #    mkdir -p "$MAMBA_ROOT_PREFIX"
+            #  fi
+            #  if [ ! -d "$MAMBA_ROOT_PREFIX/envs/${mambaEnv}" ]; then
+            #    micromamba create -n ${mambaEnv} -y -c conda-forge ${pythonVer} ${pythonPkgs}
+            #  fi
+            #'';
 
           };
 
