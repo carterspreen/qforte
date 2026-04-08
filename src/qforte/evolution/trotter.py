@@ -4,7 +4,7 @@ from qiskit.circuit import QuantumCircuit
 from qforte.helper.df_ham_helper import *
 from qforte.utils.exponentiate import exponentiate_pauli_string
 
-def trotter_evolve(mol, dt, N, r=1, order=1):
+def trotter_evolve(mol, dt, N=1, r=1, order=1):
 
     ref = mol.hf_reference   #hartree fock reference state
     nel = sum(ref)           #num of electrons
