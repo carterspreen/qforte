@@ -494,6 +494,7 @@ PYBIND11_MODULE(qforte, m) {
         .def("gate_id", &Gate::gate_id)
         .def("sparse_matrix", &Gate::sparse_matrix)
         .def("adjoint", &Gate::adjoint)
+        .def("param", &Gate::param)
         .def("str", &Gate::str)
         .def("__str__", &Gate::str)
         .def("__repr__", &Gate::repr);

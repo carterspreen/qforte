@@ -4,7 +4,7 @@ import numpy as np
 from matplotlib import pyplot as plt
 from qforte.qiskit_api.translators import qforte_to_qiskit
 from qforte.qiskit_api.dispatchers import QpuDispatcher, AerDispatcher, Dispatcher
-from qiskit_ibm_runtime.fake_provider import FakeTorino
+from qiskit_ibm_runtime.fake_provider import FakeNighthawk
 from qiskit.visualization import plot_histogram
 from qiskit import qasm3
 
@@ -40,7 +40,7 @@ class SamplerHistFlow:
         return self.hist()
 
     def get_or_cache(self, name, dispatcher, circuits, **kwargs):
-        cache_file = f"data/{name}_result.pkl"
+        cache_file = f"{name}_result.pkl"
         if os.path.exists(cache_file):
             with open(cache_file, 'rb') as f:
                 return pickle.load(f)
@@ -64,9 +64,9 @@ class SamplerHistFlow:
         qc.measure_all()
 
         # Create dispatchers for QPU and Aer
-        qpu_dispatcher = QpuDispatcher("ibm_torino")
+        qpu_dispatcher = QpuDispatcher()
         aer_dispatcher = AerDispatcher()
-        fake_dispatcher = Dispatcher(FakeTorino())
+        fake_dispatcher = Dispatcher(FakeNighthawk())
 
         # Dispatch the circuits using QPU (cached)
         qpu_result = self.get_or_cache("qpu", qpu_dispatcher, circuits=[qc], shots=self.shots)
@@ -81,7 +81,7 @@ class SamplerHistFlow:
         fake_brisbane_counts = fake_dispatcher_result[0].data.meas.get_counts()
 
         # plot the qpu results
-        q_legend = ['IBM Heron r1', 'Simulated IBM Heron r1', 'Aer Simulator']
+        q_legend = ['IBM QPU', 'Simulated Nighthawk QPU', 'Aer Simulator']
         q_dists = [qpu_counts, fake_brisbane_counts, aer_counts]
 
         if self.computer:
@@ -105,6 +105,6 @@ class SamplerHistFlow:
                         legend=legend,
                         figsize=(10, 6),
                         bar_labels=False)
-        plt.savefig("data/trotter_hist.png", dpi=300, bbox_inches='tight')
+        plt.savefig("trotter_hist.png", dpi=300, bbox_inches='tight')
         plt.show()
         return dists
